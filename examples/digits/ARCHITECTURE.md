@@ -33,20 +33,20 @@ A handwritten digit classifier built entirely in Churing. No Python, no external
 │    ReLU     │
 └──────┬──────┘
        │
-       │  W3: 10×64 matrix       b3: 10 vector
+       │  W3: 11×64 matrix       b3: 11 vector
        │  z3 = W3 · a2 + b3
        │  a3 = softmax(z3)
        ▼
 ┌─────────────┐
-│ Output Layer │  10 neurons (one per digit 0-9)
+│ Output Layer │  11 neurons (digits 0-9 + "other")
 │   Softmax   │  probabilities sum to 1.0
 └──────┬──────┘
        │
        │  argmax(a3)
        ▼
    Predicted
-    Digit
-   (0 - 9)
+  Digit or "other"
+   (0 - 10)
 ```
 
 ### Parameter Count
@@ -55,8 +55,8 @@ A handwritten digit classifier built entirely in Churing. No Python, no external
 |-------|---------|--------|-------|
 | W1    | 128 × 1024 = 131,072 | 128 | 131,200 |
 | W2    | 64 × 128 = 8,192 | 64 | 8,256 |
-| W3    | 10 × 64 = 640 | 10 | 650 |
-| **Total** | | | **140,106** |
+| W3    | 11 × 64 = 704 | 11 | 715 |
+| **Total** | | | **140,171** |
 
 ## Forward Pass
 
@@ -85,12 +85,12 @@ A handwritten digit classifier built entirely in Churing. No Python, no external
                                                                  └────────┘       │
                                                                                   ▼
                                                                              ┌─────────┐     ┌────┐
-                                                                             │ matVecMul│────▶│vecA│──▶ z3 (10)
+                                                                             │ matVecMul│────▶│vecA│──▶ z3 (11)
                                                                              │  W3×a2   │     │ dd │       │
                                                                              └─────────┘     │ +b3│       │
                                                                                               └────┘       ▼
                                                                                                       ┌─────────┐
-                                                                                                      │ softmax │──▶ output (10)
+                                                                                                      │ softmax │──▶ output (11)
                                                                                                       │ eˣ/Σeˣ  │
                                                                                                       └─────────┘
 ```
@@ -244,8 +244,8 @@ Xavier initialization keeps activations and gradients in a reasonable range, pre
   │  └─────────────┘   │
   └─────────────────────┘
 
-  Output: 150 training images (15 per digit)
-          50 test images (5 per digit)
+  Output: 165 training images (15 per digit/class, including "other")
+          55 test images (5 per digit/class)
 ```
 
 ### PGM P2 Format
@@ -326,8 +326,8 @@ Standard image format — viewable in GIMP, IrfanView, ImageMagick, Firefox.
 
   Example output:
     Image: data/test/7_002.pgm
-    Predicted digit: 7
-    Confidence: [0.01, 0.00, 0.02, 0.01, 0.00, 0.01, 0.03, 0.89, 0.01, 0.02]
+    Predicted: digit 7
+    Confidence: [0.01, 0.00, 0.02, 0.01, 0.00, 0.01, 0.03, 0.89, 0.01, 0.02, 0.00]
 ```
 
 ## Data Representation

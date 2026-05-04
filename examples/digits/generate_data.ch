@@ -70,4 +70,27 @@
     | true -> 0
     | false -> seq (generateN d 15 0 trainDir) (seq (generateN d 5 0 testDir) (generateDigit (d + 1) trainDir testDir)))
 
+# Generate a pure random noise image
+~makeNoise dummy (map (|>_. random 0) (range 0 1024))
+
+# Generate a blank image with very slight noise
+~makeBlank dummy (map (|>_. clamp01 ((random 0) * 0.15)) (range 0 1024))
+
+# Generate one "other" image (random noise or blank variant, label=10)
+~generateOtherOne idx,dir (
+    @choice (floor ((random 0) * 3.0))
+    @pixels (match choice
+        | 0 -> makeNoise 0
+        | 1 -> makeBlank 0
+        | _ -> addNoise (makeBlank 0) 0.3)
+    @path (str [dir, "/10_", idx, ".pgm"])
+    writePgm path 32 32 pixels
+)
+
+~generateOtherN n,startIdx,dir (match n
+    | 0 -> 0
+    | _ -> seq (generateOtherOne startIdx dir) (generateOtherN (n - 1) (startIdx + 1) dir))
+
 generateDigit 0 "examples/digits/data/train" "examples/digits/data/test"
+generateOtherN 15 0 "examples/digits/data/train"
+generateOtherN 5 0 "examples/digits/data/test"

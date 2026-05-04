@@ -19,7 +19,7 @@
 # Write a PGM P2 file from pixels (FloatArray or list)
 ~writePgm path,w,h,pixels (
     @dimLine (str [w, " ", h])
-    @pixelList (arrayToList pixels)
+    @pixelList (try (arrayToList pixels) (|>_. pixels))
     @pixelVals (map (|>p. toString (round (p * 255.0))) pixelList)
     @pixelLine (join " " pixelVals)
     @lines ["P2", dimLine, "255", pixelLine]

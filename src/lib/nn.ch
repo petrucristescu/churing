@@ -16,8 +16,8 @@
     @b1 (arrayCreate 128 0.0)
     @w2 (matRandomN 64 128 (xavierScale 128 64))
     @b2 (arrayCreate 64 0.0)
-    @w3 (matRandomN 10 64 (xavierScale 64 10))
-    @b3 (arrayCreate 10 0.0)
+    @w3 (matRandomN 11 64 (xavierScale 64 11))
+    @b3 (arrayCreate 11 0.0)
     {w1: w1, b1: b1, w2: w2, b2: b2, w3: w3, b3: b3}
 )
 
@@ -69,7 +69,7 @@
     @output (get acts "output")
 
     # Output layer error: output - one_hot(label)
-    @target (oneHotA label 10)
+    @target (oneHotA label 11)
     @d3 (arrayVecSub output target)
 
     # Gradients for layer 3

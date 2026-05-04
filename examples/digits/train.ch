@@ -20,7 +20,7 @@
     | false -> loadN digit (i + 1) count dir (tryLoadSample (str [dir, "/", digit, "_", i, ".pgm"]) acc))
 
 # Load all digits
-~loadDigit d,numPerDigit,dir,acc (match (gt d 9)
+~loadDigit d,numPerDigit,dir,acc (match (gt d 10)
     | true -> acc
     | false -> seq (print (str ["Loading digit ", d, "..."])) (loadDigit (d + 1) numPerDigit dir (append acc (loadN d 0 numPerDigit dir []))))
 
@@ -65,15 +65,15 @@
 # === MAIN ===
 
 seq (print "=== Churing Neural Network Training ===") 0
-seq (print "Architecture: 1024 -> 128 (ReLU) -> 64 (ReLU) -> 10 (Softmax)") 0
+seq (print "Architecture: 1024 -> 128 (ReLU) -> 64 (ReLU) -> 11 (Softmax)") 0
 seq (print "Using native FloatArray for fast matrix operations") 0
 
-# Load all 150 training samples
+# Load all 165 training samples (150 digits + 15 other)
 @samples (loadAllSamples 15 "examples/digits/data/train")
 seq (print (str ["Loaded ", (len samples), " training samples"])) 0
 
 # Initialize network
-seq (print "Initializing network (140,106 parameters)...") 0
+seq (print "Initializing network (140,747 parameters)...") 0
 @net (initNetwork 0)
 seq (print "Network initialized with Xavier weights") 0
 
