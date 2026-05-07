@@ -30,7 +30,7 @@
 ~sampleLoss net,sample (
     @output (get (forward net (get sample "input")) "output")
     @label (get sample "label")
-    @p (arrayGet output label)
+    @p (nth output label)
     @clipped (match (lt p 0.0000001) | true -> 0.0000001 | false -> p)
     0.0 - (log clipped)
 )
@@ -66,7 +66,7 @@
 
 seq (print "=== Churing Neural Network Training ===") 0
 seq (print "Architecture: 1024 -> 128 (ReLU) -> 64 (ReLU) -> 11 (Softmax)") 0
-seq (print "Using native FloatArray for fast matrix operations") 0
+seq (print "Using pure Churing vector/matrix operations") 0
 
 # Load all 165 training samples (150 digits + 15 other)
 @samples (loadAllSamples 15 "examples/digits/data/train")
