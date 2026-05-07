@@ -30,3 +30,8 @@ import "vector"
 ~matZeros rows,cols (match rows
     | 0 -> []
     | _ -> cons (vecZeros cols) (matZeros (rows - 1) cols))
+
+# Matrix-matrix multiply: (m x k) * (k x n) -> (m x n)
+~matMul A,B (
+    @Bt (matTranspose B)
+    map (|>row. map (|>col. vecDot row col) Bt) A)
