@@ -1,8 +1,6 @@
 # Matrix operations for neural network
 # A matrix is a list of row vectors (list of lists of floats)
 
-import "vector"
-
 # Matrix-vector multiply: mat (m x n) * vec (n) -> vec (m)
 ~matVecMul mat,vec (map (|>row. vecDot row vec) mat)
 

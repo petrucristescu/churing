@@ -2,11 +2,6 @@
 # Architecture: 1024 -> 128 -> 64 -> 11
 # Pure Churing — uses vector.ch, matrix.ch, activations.ch, loss.ch
 
-import "vector"
-import "matrix"
-import "activations"
-import "loss"
-
 # Xavier initialization scale: sqrt(6 / (fan_in + fan_out))
 ~xavierScale fanIn,fanOut (sqrt (6.0 / (toFloat (fanIn + fanOut))))
 
