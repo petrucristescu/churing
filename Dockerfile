@@ -4,7 +4,16 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install dependencies (matching GitHub Actions setup)
 RUN apt-get update && \
-    apt-get install -y bubblewrap wget gcc make patch unzip m4 git ca-certificates bzip2 default-mysql-client && \
+    apt-get install -y bubblewrap wget gcc g++ make patch unzip m4 git ca-certificates bzip2 default-mysql-client \
+        cmake lsb-release software-properties-common gnupg && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install LLVM 18 from official apt repo (llvm.14 conflicts with OCaml 5.x; opam llvm needs llvm-18-dev, libzstd-dev, zlib1g-dev)
+RUN wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh && \
+    chmod +x /tmp/llvm.sh && \
+    bash /tmp/llvm.sh 18 && \
+    apt-get install -y llvm-18-dev clang-18 libzstd-dev zlib1g-dev && \
+    ln -sf /usr/bin/llvm-config-18 /usr/local/bin/llvm-config && \
     rm -rf /var/lib/apt/lists/*
 
 # Install opam 2.1.5 (same version as CI)
@@ -24,7 +33,8 @@ WORKDIR /app
 # Set OPAMROOT explicitly so opam works even when HOME is overridden at runtime
 ENV OPAMROOT=/home/appuser/.opam
 RUN opam init --disable-sandboxing --no-setup --compiler=ocaml-base-compiler.5.1.1 -y && \
-    opam install dune alcotest -y && \
+    opam update && \
+    opam install conf-llvm-shared.18 dune alcotest llvm -y && \
     chmod -R a+rX /home/appuser/.opam
 
 # Make opam root accessible to any UID (for --user overrides in run-tests.sh)

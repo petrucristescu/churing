@@ -36,18 +36,23 @@ jobs:
             _opam
             /usr/local/bin/opam
             /home/runner/.local/bin/opam
-          key: ${{ runner.os }}-ocaml-${{ hashFiles('*.opam', '**/*.opam') }}-v2
+          key: ${{ runner.os }}-ocaml-${{ hashFiles('*.opam', '**/*.opam') }}-v3
 
       - name: Set up OCaml environment
         if: steps.setup-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y bubblewrap
+          sudo apt-get install -y bubblewrap gcc g++ cmake lsb-release software-properties-common gnupg
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo bash /tmp/llvm.sh 18
+          sudo apt-get install -y llvm-18-dev clang-18 libzstd-dev zlib1g-dev
+          sudo ln -sf /usr/bin/llvm-config-18 /usr/local/bin/llvm-config
           wget https://github.com/ocaml/opam/releases/download/2.1.5/opam-2.1.5-x86_64-linux -O /tmp/opam
           sudo mv /tmp/opam /usr/local/bin/opam
           sudo chmod +x /usr/local/bin/opam
           opam init --disable-sandboxing --no-setup --compiler=ocaml-base-compiler.5.1.1 -y
-          opam install dune alcotest -y
+          opam update && opam install conf-llvm-shared.18 dune alcotest llvm -y
 
       - name: Seed database
         run: mysql -h 127.0.0.1 -u root -pchuringtest churingdb < test/db/init.sql

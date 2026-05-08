@@ -1,7 +1,7 @@
 (library
  (name churing_lib)
- (modules parser eval ast types infer)
- (libraries unix)
+ (modules parser eval ast types infer codegen)
+ (libraries unix llvm)
  (wrapped false)
  (flags (:standard -w -27)))
 
