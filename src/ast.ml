@@ -43,6 +43,7 @@ let rec string_of_typ = function
   | Types.TList a -> "[" ^ string_of_typ a ^ "]"
   | Types.TDict a -> "{String: " ^ string_of_typ a ^ "}"
   | Types.TArray a -> "Array[" ^ string_of_typ a ^ "]"
+  | Types.TTensor -> "Tensor"
 
 let rec string_of_expr = function
   | Int n -> string_of_int n

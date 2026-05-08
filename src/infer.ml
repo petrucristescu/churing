@@ -52,6 +52,7 @@ let rec unify t1 t2 =
   | TList a1, TList a2 -> unify a1 a2
   | TDict a1, TDict a2 -> unify a1 a2
   | TArray a1, TArray a2 -> unify a1 a2
+  | TTensor, TTensor -> []
   | _ -> raise (TypeError ("Cannot unify types: " ^ Ast.string_of_typ t1 ^ " and " ^ Ast.string_of_typ t2))
 
 (* Scheme helpers *)
@@ -309,24 +310,19 @@ let add_operators_to_env env =
   let ar_f = fresh_var () in
   let env = StringMap.add "arrayToList" (mono (TFun (TArray ar_f, TList ar_f))) env in
 
-  (* Float-specific array operations *)
-  let t_fa = TArray TFloat in
-  let env = StringMap.add "arrayDot" (mono (TFun (t_fa, TFun (t_fa, TFloat)))) env in
-  let env = StringMap.add "arrayVecAdd" (mono (TFun (t_fa, TFun (t_fa, t_fa)))) env in
-  let env = StringMap.add "arrayVecSub" (mono (TFun (t_fa, TFun (t_fa, t_fa)))) env in
-  let env = StringMap.add "arrayVecMul" (mono (TFun (t_fa, TFun (t_fa, t_fa)))) env in
-  let env = StringMap.add "arrayVecScale" (mono (TFun (TFloat, TFun (t_fa, t_fa)))) env in
-  let env = StringMap.add "arraySum" (mono (TFun (t_fa, TFloat))) env in
-  let env = StringMap.add "arrayArgmax" (mono (TFun (t_fa, TInt))) env in
-  let env = StringMap.add "arrayMatVecMul" (mono (TFun (TList t_fa, TFun (t_fa, t_fa)))) env in
-  let env = StringMap.add "arrayOuterProduct" (mono (TFun (t_fa, TFun (t_fa, TList t_fa)))) env in
-  let env = StringMap.add "arrayMatTranspose" (mono (TFun (TList t_fa, TList t_fa))) env in
-  let env = StringMap.add "arrayMatAdd" (mono (TFun (TList t_fa, TFun (TList t_fa, TList t_fa)))) env in
-  let env = StringMap.add "arrayMatScale" (mono (TFun (TFloat, TFun (TList t_fa, TList t_fa)))) env in
-  let env = StringMap.add "arrayRandom" (mono (TFun (TInt, TFun (TFloat, t_fa)))) env in
-  let env = StringMap.add "arraySoftmax" (mono (TFun (t_fa, t_fa))) env in
-  let env = StringMap.add "arrayRelu" (mono (TFun (t_fa, t_fa))) env in
-  let env = StringMap.add "arrayReluDeriv" (mono (TFun (t_fa, t_fa))) env in
+  (* Tensor primitives *)
+  let t = TTensor in
+  let env = StringMap.add "tensorCreate" (mono (TFun (TInt, TFun (TInt, TFun (TFloat, t))))) env in
+  let env = StringMap.add "tensorGet" (mono (TFun (t, TFun (TInt, TFun (TInt, TFloat))))) env in
+  let env = StringMap.add "tensorSet" (mono (TFun (t, TFun (TInt, TFun (TInt, TFun (TFloat, t)))))) env in
+  let env = StringMap.add "tensorRows" (mono (TFun (t, TInt))) env in
+  let env = StringMap.add "tensorCols" (mono (TFun (t, TInt))) env in
+  let env = StringMap.add "tensorShape" (mono (TFun (t, TList TInt))) env in
+  let env = StringMap.add "tensorVec" (mono (TFun (TList TFloat, t))) env in
+  let env = StringMap.add "tensorMat" (mono (TFun (TList (TList TFloat), t))) env in
+  let env = StringMap.add "tensorToVec" (mono (TFun (t, TList TFloat))) env in
+  let env = StringMap.add "tensorToMat" (mono (TFun (t, TList (TList TFloat)))) env in
+  let env = StringMap.add "tensorRandom" (mono (TFun (TInt, TFun (TInt, TFun (TFloat, t))))) env in
   env
 
 let rec infer env = function

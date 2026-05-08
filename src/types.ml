@@ -9,6 +9,7 @@ type typ =
   | TList of typ
   | TDict of typ
   | TArray of typ
+  | TTensor
   | TUnknown
 
 type scheme = Forall of string list * typ

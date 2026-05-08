@@ -18,6 +18,7 @@ type value =
   | VRecFun of string * string list * expr * env  (* name * args * body * env — binds itself at call time *)
   | VPrim of (value list -> value)
   | VArray of value array  (* Generic array — any element type, O(1) access *)
+  | VTensor of float array * int * int  (* data (row-major) * rows * cols *)
   | VTailCall of env * expr  (* Trampoline marker for tail call optimization *)
 and env = value StringMap.t
 
@@ -91,6 +92,8 @@ let rec string_of_value = function
       "{" ^ String.concat ", " (List.map (fun (k, v) -> k ^ ": " ^ string_of_value v) entries) ^ "}"
   | VArray arr ->
       "Array[" ^ String.concat ", " (Array.to_list (Array.map string_of_value arr)) ^ "]"
+  | VTensor (_, rows, cols) ->
+      Printf.sprintf "Tensor(%dx%d)" rows cols
   | VTailCall _ -> "<tailcall>"
   | VRecFun _ | _ -> "<fun>"
 
@@ -256,6 +259,109 @@ let create_math_functions env =
   |> StringMap.add "max" (VPrim (fun args ->
       let a = expect_numeric "max" (List.hd args) in
       VPrim (fun args -> VFloat (Float.max a (expect_numeric "max" (List.hd args))))))
+
+(* Tensor primitives — contiguous float array, row-major layout *)
+let create_tensor_functions env =
+  let expect_tensor name = function
+    | VTensor (data, rows, cols) -> (data, rows, cols)
+    | _ -> raise (RuntimeError (name ^ ": expected Tensor"))
+  in
+  let expect_int name = function
+    | VInt n -> n
+    | _ -> raise (RuntimeError (name ^ ": expected int"))
+  in
+  let to_float name = function
+    | VFloat f -> f
+    | VInt n -> float_of_int n
+    | VLong n -> Int64.to_float n
+    | _ -> raise (RuntimeError (name ^ ": expected numeric"))
+  in
+  let list_of name = function
+    | VList vs -> vs
+    | VNil -> []
+    | _ -> raise (RuntimeError (name ^ ": expected list"))
+  in
+  env
+  (* tensorCreate rows cols val — filled tensor *)
+  |> StringMap.add "tensorCreate" (VPrim (fun args ->
+      let rows = expect_int "tensorCreate" (List.hd args) in
+      VPrim (fun args ->
+        let cols = expect_int "tensorCreate" (List.hd args) in
+        VPrim (fun args ->
+          let v = to_float "tensorCreate" (List.hd args) in
+          VTensor (Array.make (rows * cols) v, rows, cols)))))
+  (* tensorGet t row col *)
+  |> StringMap.add "tensorGet" (VPrim (fun args ->
+      let (data, rows, cols) = expect_tensor "tensorGet" (List.hd args) in
+      VPrim (fun args ->
+        let row = expect_int "tensorGet" (List.hd args) in
+        VPrim (fun args ->
+          let col = expect_int "tensorGet" (List.hd args) in
+          if row < 0 || row >= rows || col < 0 || col >= cols then
+            raise (RuntimeError "tensorGet: index out of bounds")
+          else
+            VFloat data.(row * cols + col)))))
+  (* tensorSet t row col val — returns new tensor (immutable) *)
+  |> StringMap.add "tensorSet" (VPrim (fun args ->
+      let (data, rows, cols) = expect_tensor "tensorSet" (List.hd args) in
+      VPrim (fun args ->
+        let row = expect_int "tensorSet" (List.hd args) in
+        VPrim (fun args ->
+          let col = expect_int "tensorSet" (List.hd args) in
+          VPrim (fun args ->
+            let v = to_float "tensorSet" (List.hd args) in
+            let d = Array.copy data in
+            d.(row * cols + col) <- v;
+            VTensor (d, rows, cols))))))
+  (* tensorRows / tensorCols / tensorShape *)
+  |> StringMap.add "tensorRows" (VPrim (fun args ->
+      let (_, rows, _) = expect_tensor "tensorRows" (List.hd args) in
+      VInt rows))
+  |> StringMap.add "tensorCols" (VPrim (fun args ->
+      let (_, _, cols) = expect_tensor "tensorCols" (List.hd args) in
+      VInt cols))
+  |> StringMap.add "tensorShape" (VPrim (fun args ->
+      let (_, rows, cols) = expect_tensor "tensorShape" (List.hd args) in
+      VList [VInt rows; VInt cols]))
+  (* tensorVec [Float] — 1D tensor (rows=n, cols=1) *)
+  |> StringMap.add "tensorVec" (VPrim (fun args ->
+      let lst = list_of "tensorVec" (List.hd args) in
+      let n = List.length lst in
+      let data = Array.init n (fun i -> to_float "tensorVec" (List.nth lst i)) in
+      VTensor (data, n, 1)))
+  (* tensorMat [[Float]] — 2D tensor *)
+  |> StringMap.add "tensorMat" (VPrim (fun args ->
+      let rows_list = list_of "tensorMat" (List.hd args) in
+      let nrows = List.length rows_list in
+      if nrows = 0 then VTensor ([||], 0, 0)
+      else begin
+        let get_row v = List.map (to_float "tensorMat") (list_of "tensorMat" v) in
+        let float_rows = List.map get_row rows_list in
+        let ncols = List.length (List.hd float_rows) in
+        let data = Array.make (nrows * ncols) 0.0 in
+        List.iteri (fun i row ->
+          List.iteri (fun j v -> data.(i * ncols + j) <- v) row) float_rows;
+        VTensor (data, nrows, ncols)
+      end))
+  (* tensorToVec t — tensor → [Float] *)
+  |> StringMap.add "tensorToVec" (VPrim (fun args ->
+      let (data, _, _) = expect_tensor "tensorToVec" (List.hd args) in
+      VList (Array.to_list (Array.map (fun f -> VFloat f) data))))
+  (* tensorToMat t — tensor → [[Float]] *)
+  |> StringMap.add "tensorToMat" (VPrim (fun args ->
+      let (data, rows, cols) = expect_tensor "tensorToMat" (List.hd args) in
+      VList (List.init rows (fun i ->
+        VList (List.init cols (fun j -> VFloat data.(i * cols + j)))))))
+  (* tensorRandom rows cols scale — uniform random in [-scale, scale] *)
+  |> StringMap.add "tensorRandom" (VPrim (fun args ->
+      let rows = expect_int "tensorRandom" (List.hd args) in
+      VPrim (fun args ->
+        let cols = expect_int "tensorRandom" (List.hd args) in
+        VPrim (fun args ->
+          let scale = to_float "tensorRandom" (List.hd args) in
+          let data = Array.init (rows * cols)
+            (fun _ -> Random.float (2.0 *. scale) -. scale) in
+          VTensor (data, rows, cols)))))
 
 (* Array primitives — generic O(1) access, type tracked by HM inference *)
 let create_array_functions env =
@@ -1014,6 +1120,7 @@ let rec eval_with_imports env expr =
         | "operators" -> create_church_booleans env
         | "math" -> create_math_functions env
         | "array" -> create_array_functions env
+        | "tensor" -> create_tensor_functions env
         | "string" -> create_string_functions env
         | "list" -> create_list_functions env
         | "time" -> create_time_functions env
@@ -1254,7 +1361,7 @@ let rec eval_toplevel (env : env) (expr : expr) : env * value option =
       (env, Some v)
 
 let load_prelude () =
-  let stdlib = ["operators"; "math"; "array"; "string"; "list"; "time"; "io"; "dict"; "json"; "mysql"; "church_list"; "result"; "vector"; "matrix"; "activations"; "loss"; "pgm"; "nn"] in
+  let stdlib = ["operators"; "math"; "array"; "tensor"; "string"; "list"; "time"; "io"; "dict"; "json"; "mysql"; "church_list"; "result"; "vector"; "matrix"; "activations"; "loss"; "pgm"; "nn"] in
   List.fold_left (fun env lib ->
     fst (eval_with_imports env (Import lib))
   ) StringMap.empty stdlib
