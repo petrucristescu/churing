@@ -449,6 +449,8 @@ let rec infer env = function
       (compose s3 (compose s2 s1), apply s3 (apply s2 t1))
   | Import _ ->
       ([], TInt)
+  | Llvm _ ->
+      ([], fresh_var ())
 
 and infer_pattern pat t_scrut : subst * (string * typ) list =
   match pat with

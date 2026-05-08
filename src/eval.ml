@@ -1106,6 +1106,38 @@ let rec match_pattern (pat : Ast.pattern) (v : value) : (string * value) list op
        | None -> None)
   | _ -> None
 
+(* Interpreter-mode fallback for llvm intrinsics.
+   In compiled mode (#91+) these become real LLVM IR calls.
+   In eval mode they dispatch to OCaml's math functions — same hardware path. *)
+let llvm_intrinsics =
+  let to_f name = function
+    | VFloat f -> f | VInt n -> float_of_int n | VLong n -> Int64.to_float n
+    | _ -> raise (RuntimeError (name ^ ": expected numeric")) in
+  let math1 name f =
+    VPrim (fun args -> VFloat (f (to_f name (List.hd args)))) in
+  let math2 name f =
+    VPrim (fun args ->
+      let a = to_f name (List.hd args) in
+      VPrim (fun args -> VFloat (f a (to_f name (List.hd args))))) in
+  [ "llvm.sqrt.f64",     math1 "sqrt" Float.sqrt
+  ; "llvm.exp.f64",      math1 "exp"  Float.exp
+  ; "llvm.log.f64",      math1 "log"  Float.log
+  ; "llvm.sin.f64",      math1 "sin"  Float.sin
+  ; "llvm.cos.f64",      math1 "cos"  Float.cos
+  ; "llvm.fabs.f64",     math1 "fabs" Float.abs
+  ; "llvm.pow.f64",      math2 "pow"  Float.pow
+  ; "llvm.minnum.f64",   math2 "min"  Float.min
+  ; "llvm.maxnum.f64",   math2 "max"  Float.max
+  ]
+
+let eval_llvm intrinsic eval_args =
+  match List.assoc_opt intrinsic llvm_intrinsics with
+  | None -> raise (RuntimeError ("Unknown LLVM intrinsic: " ^ intrinsic))
+  | Some initial ->
+      List.fold_left (fun v arg ->
+        match v with VPrim f -> f [arg] | _ -> v
+      ) initial eval_args
+
 (* Define an eval_with_imports function to handle environment properly *)
 (* eval_with_imports and force are mutually recursive for tail call optimization *)
 let rec eval_with_imports env expr =
@@ -1159,6 +1191,9 @@ let rec eval_with_imports env expr =
         with RuntimeError _ -> env_with_natives
       in
       (final_env, VInt 0)
+  | Llvm (intrinsic, arg_exprs) ->
+      let args = List.map (fun e -> force (snd (eval_with_imports env e))) arg_exprs in
+      (env, eval_llvm intrinsic args)
   | Int n -> (env, VInt n)
   | Lng n -> (env, VLong n)
   | Float f -> (env, VFloat f)
