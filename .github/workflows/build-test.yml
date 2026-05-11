@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ master ]
 
+permissions:
+  contents: write
+
 jobs:
   build-and-test:
     runs-on: ubuntu-22.04
@@ -26,6 +29,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0   # full history needed for changelog generation
 
       - name: Setup OCaml cache
         id: setup-cache
@@ -103,4 +108,69 @@ jobs:
           if [ "$failed" -eq 1 ]; then
             echo "Some tests failed!"
             exit 1
+          fi
+
+      # ── Release steps — only on successful master push, not PRs ──────────────
+
+      - name: Prepare release artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        id: prep
+        run: |
+          VERSION=$(cat VERSION)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+          ARTIFACT="churing-v${VERSION}-linux-amd64"
+          cp _build/default/src/churing.exe "$ARTIFACT"
+          chmod +x "$ARTIFACT"
+          echo "artifact=${ARTIFACT}" >> "$GITHUB_OUTPUT"
+
+          # Changelog: commits since the last release tag (or full log if none)
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          {
+            echo "## Changes"
+            echo ""
+            if [ -n "$PREV_TAG" ]; then
+              git log "${PREV_TAG}..HEAD" --no-merges --pretty="- %s" \
+                | grep -v "^- chore: bump version"
+            else
+              git log --no-merges --pretty="- %s" | head -30
+            fi
+            echo ""
+            echo "## Download"
+            echo ""
+            echo "\`${ARTIFACT}\` — Churing interpreter, Linux x86-64"
+          } > release_notes.md
+          echo "--- release notes ---"
+          cat release_notes.md
+
+      - name: Create GitHub release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${{ steps.prep.outputs.version }}
+          ARTIFACT=${{ steps.prep.outputs.artifact }}
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "Release v${VERSION} already exists — skipping"
+          else
+            gh release create "v${VERSION}" "${ARTIFACT}" \
+              --title "churing v${VERSION}" \
+              --notes-file release_notes.md
+          fi
+
+      - name: Bump version
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          VERSION=$(cat VERSION)
+          IFS='.' read -r major minor patch <<< "$VERSION"
+          NEW_VERSION="${major}.${minor}.$((patch + 1))"
+          echo "$NEW_VERSION" > VERSION
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION
+          if git diff --staged --quiet; then
+            echo "Version already bumped — nothing to commit"
+          else
+            git commit -m "chore: bump version to ${NEW_VERSION}"
+            git push
           fi
