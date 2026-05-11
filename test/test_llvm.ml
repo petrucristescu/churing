@@ -8,15 +8,32 @@ let contains s sub =
       else loop (i + 1)
     in loop 0
 
-let test_smoke () =
-  let ir = Codegen.smoke_test () in
+let test_compile_module () =
+  let exprs = [
+    Ast.FunDef ("my_sqrt", ["x"], Ast.Llvm ("llvm.sqrt.f64", [Ast.Var "x"]))
+  ] in
+  let (ctx, md) = Codegen.compile_module exprs in
+  let ir = Llvm.string_of_llmodule md in
+  Llvm.dispose_module md;
+  Llvm.dispose_context ctx;
   Alcotest.(check bool) "emits IR" true (String.length ir > 0);
-  Alcotest.(check bool) "contains sqrt intrinsic" true
-    (contains ir "llvm.sqrt.f64")
+  Alcotest.(check bool) "contains function def" true (contains ir "my_sqrt");
+  Alcotest.(check bool) "contains sqrt intrinsic" true (contains ir "llvm.sqrt.f64")
+
+let test_arithmetic () =
+  let exprs = [
+    Ast.FunDef ("add_one", ["x"], Ast.Add (Ast.Var "x", Ast.Float 1.0))
+  ] in
+  let (ctx, md) = Codegen.compile_module exprs in
+  let ir = Llvm.string_of_llmodule md in
+  Llvm.dispose_module md;
+  Llvm.dispose_context ctx;
+  Alcotest.(check bool) "fadd in IR" true (contains ir "fadd")
 
 let () =
   Alcotest.run "llvm" [
-    "smoke", [
-      Alcotest.test_case "LLVM bindings functional" `Quick test_smoke
+    "codegen", [
+      Alcotest.test_case "compile_module emits valid IR" `Quick test_compile_module;
+      Alcotest.test_case "arithmetic lowers to fadd"    `Quick test_arithmetic;
     ]
   ]

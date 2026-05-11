@@ -1,7 +1,8 @@
 (library
  (name churing_lib)
  (modules parser eval ast types infer codegen)
- (libraries unix llvm)
+ (foreign_stubs (language c) (names codegen_stubs))
+ (libraries unix llvm llvm.executionengine llvm.all_backends)
  (wrapped false)
  (flags (:standard -w -27)))
 
