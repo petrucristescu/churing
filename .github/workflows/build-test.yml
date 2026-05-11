@@ -126,6 +126,7 @@ jobs:
 
           ARTIFACT="churing-v${VERSION}-linux-amd64"
           cp _build/default/src/churing.exe "$ARTIFACT"
+          strip "$ARTIFACT"
           chmod +x "$ARTIFACT"
           echo "artifact=${ARTIFACT}" >> "$GITHUB_OUTPUT"
 
