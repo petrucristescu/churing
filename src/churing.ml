@@ -1,16 +1,19 @@
 let () =
-  let show_ast = ref false in
+  let show_ast   = ref false in
   let show_types = ref false in
-  let filename = ref "" in
+  let filename   = ref "" in
   let args = Array.to_list Sys.argv |> List.tl in
   List.iter (function
-    | "--ast" -> show_ast := true
+    | "--version" | "-v" ->
+        print_endline Version.version;
+        exit 0
+    | "--ast"   -> show_ast   := true
     | "--types" -> show_types := true
     | s when !filename = "" && not (String.starts_with ~prefix:"--" s) -> filename := s
     | _ -> ()
   ) args;
   if !filename = "" then (
-    print_endline "Usage: churing [--ast] [--types] <file.ch>";
+    Printf.printf "churing %s\nUsage: churing [--ast] [--types] <file.ch>\n" Version.version;
     exit 1
   );
   let input =

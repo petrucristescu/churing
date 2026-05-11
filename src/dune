@@ -1,6 +1,17 @@
+(executable
+ (name gen_version)
+ (modules gen_version))
+
+(rule
+ (target version.ml)
+ (deps ../VERSION)
+ (action
+  (with-stdout-to %{target}
+   (run %{exe:gen_version.exe} %{dep:../VERSION}))))
+
 (library
  (name churing_lib)
- (modules parser eval ast types infer codegen)
+ (modules parser eval ast types infer codegen version)
  (foreign_stubs (language c) (names codegen_stubs))
  (libraries unix llvm llvm.executionengine llvm.all_backends)
  (wrapped false)
