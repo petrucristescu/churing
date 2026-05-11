@@ -1,0 +1,16 @@
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libzstd1 libtinfo6 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY _build/default/src/churing.exe /usr/local/bin/churing
+COPY src/lib/                        /usr/local/lib/
+COPY examples/                       /home/churing/examples/
+COPY docker/entrypoint.sh            /entrypoint.sh
+
+RUN chmod +x /usr/local/bin/churing /entrypoint.sh \
+    && strip /usr/local/bin/churing
+
+WORKDIR /home/churing
+ENTRYPOINT ["/entrypoint.sh"]
