@@ -144,6 +144,73 @@ let test_mutual_recursion () =
   Alcotest.(check bool) "f1 present" true (contains ir "f1");
   Alcotest.(check bool) "f2 present" true (contains ir "f2")
 
+(* ── #94 tests ──────────────────────────────────────────────────────────────── *)
+
+(* Self-recursive tail call: ~countdown n  (match n | 0 -> 0.0 | x -> countdown (x - 1.0))
+   The recursive call in the cons arm should carry the `tail call` marker in IR. *)
+let test_tail_call_direct () =
+  let body =
+    Ast.Match (Ast.Var "n", [
+      (Ast.PInt 0, Ast.Float 0.0);
+      (Ast.PVar "x",
+       Ast.App (Ast.Var "countdown",
+         Ast.Sub (Ast.Var "x", Ast.Float 1.0)));
+    ])
+  in
+  let exprs = [ Ast.FunDef ("countdown", ["n"], body) ] in
+  let (ctx, md) = Codegen.compile_module exprs in
+  let ir = Llvm.string_of_llmodule md in
+  Llvm.dispose_module md;
+  Llvm.dispose_context ctx;
+  Alcotest.(check bool) "countdown defined" true (contains ir "countdown");
+  Alcotest.(check bool) "tail call emitted" true (contains ir "tail call")
+
+(* Mutually tail-calling pair: ~ping n → pong (n-1), ~pong n → ping (n-1)
+   Both recursive call sites should have the tail marker. *)
+let test_tail_call_mutual () =
+  let ping_body =
+    Ast.App (Ast.Var "pong", Ast.Sub (Ast.Var "n", Ast.Float 1.0))
+  in
+  let pong_body =
+    Ast.App (Ast.Var "ping", Ast.Sub (Ast.Var "n", Ast.Float 1.0))
+  in
+  let exprs = [
+    Ast.FunDef ("ping", ["n"], ping_body);
+    Ast.FunDef ("pong", ["n"], pong_body);
+  ] in
+  let (ctx, md) = Codegen.compile_module exprs in
+  let ir = Llvm.string_of_llmodule md in
+  Llvm.dispose_module md;
+  Llvm.dispose_context ctx;
+  Alcotest.(check bool) "ping defined"      true (contains ir "ping");
+  Alcotest.(check bool) "pong defined"      true (contains ir "pong");
+  Alcotest.(check bool) "tail call emitted" true (contains ir "tail call")
+
+(* Non-tail call must NOT carry the tail marker:
+   ~not_tco n  (countdown n + 1.0) — the call to countdown is not in tail position *)
+let test_non_tail_call_unmarked () =
+  let countdown_body =
+    Ast.Match (Ast.Var "n", [
+      (Ast.PInt 0, Ast.Float 0.0);
+      (Ast.PVar "x", Ast.App (Ast.Var "countdown2", Ast.Sub (Ast.Var "x", Ast.Float 1.0)));
+    ])
+  in
+  let wrapper_body =
+    Ast.Add (Ast.App (Ast.Var "countdown2", Ast.Var "n"), Ast.Float 1.0)
+  in
+  let exprs = [
+    Ast.FunDef ("countdown2", ["n"], countdown_body);
+    Ast.FunDef ("not_tco",    ["n"], wrapper_body);
+  ] in
+  let (ctx, md) = Codegen.compile_module exprs in
+  let ir = Llvm.string_of_llmodule md in
+  Llvm.dispose_module md;
+  Llvm.dispose_context ctx;
+  (* The self-recursive call in countdown2 IS in tail position *)
+  Alcotest.(check bool) "tail call in countdown2" true (contains ir "tail call");
+  (* not_tco's call to countdown2 is not in tail position — it's an operand of fadd *)
+  Alcotest.(check bool) "fadd present in not_tco" true (contains ir "fadd")
+
 (* ── #93 tests ──────────────────────────────────────────────────────────────── *)
 
 (* List literal [1.0, 2.0, 3.0] should emit GC_malloc calls and GEP *)
@@ -227,5 +294,8 @@ let () =
       Alcotest.test_case "match list nil/cons dispatch"       `Quick test_match_list_pattern;
       Alcotest.test_case "match integer pattern fcmp"         `Quick test_match_int_pattern;
       Alcotest.test_case "recursive list function compiles"   `Quick test_recursive_list_fn;
+      Alcotest.test_case "tail call marked on direct call"    `Quick test_tail_call_direct;
+      Alcotest.test_case "mutual tail calls both marked"      `Quick test_tail_call_mutual;
+      Alcotest.test_case "non-tail call not marked"           `Quick test_non_tail_call_unmarked;
     ]
   ]

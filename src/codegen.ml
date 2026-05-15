@@ -192,8 +192,9 @@ let body_returns_list list_fns body = body_returns_list_v list_fns StringSet.emp
 (* ── Main expression compiler ───────────────────────────────────────────────── *)
 (* known_fns: name → (function_type, function_value)
    Storing ft explicitly avoids relying on Llvm.type_of which may return ptr in LLVM 18.
+   in_tail: true when this expression is in tail position — enables tail call marking.
    Returns f64 for numbers/bools, closure struct for lambdas, ptr for lists. *)
-let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llvalue) Hashtbl.t) env = function
+let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llvalue) Hashtbl.t) env in_tail = function
   | Int n   -> Llvm.const_float (Llvm.double_type ctx) (float_of_int n)
   | Float f -> Llvm.const_float (Llvm.double_type ctx) f
   | Bool b  -> Llvm.const_float (Llvm.double_type ctx) (if b then 1.0 else 0.0)
@@ -241,7 +242,7 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
         (StringMap.singleton x (Llvm.params lam_fn).(0))
         (List.mapi (fun i n -> (i, n)) fv)
       in
-      let result = compile_expr ctx md lb known_fns lam_env body in
+      let result = compile_expr ctx md lb known_fns lam_env true body in
       (if Llvm.classify_type (Llvm.type_of result) <> Llvm.TypeKind.Double then
         failwith "codegen: lambda body must return f64 (list-returning lambdas deferred to #95)");
       ignore (Llvm.build_ret result lb);
@@ -270,17 +271,17 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
       (match flatten_app [e_arg] e_fn with
        (* ── Built-in list operations ── *)
        | Some ("cons", [h_expr; t_expr]) ->
-           let h = compile_expr ctx md builder known_fns env h_expr in
-           let t = compile_expr ctx md builder known_fns env t_expr in
+           let h = compile_expr ctx md builder known_fns env false h_expr in
+           let t = compile_expr ctx md builder known_fns env false t_expr in
            build_cons ctx md builder h t
        | Some ("head", [lst_expr]) ->
-           let lst = compile_expr ctx md builder known_fns env lst_expr in
+           let lst = compile_expr ctx md builder known_fns env false lst_expr in
            build_list_head ctx builder lst
        | Some ("tail", [lst_expr]) ->
-           let lst = compile_expr ctx md builder known_fns env lst_expr in
+           let lst = compile_expr ctx md builder known_fns env false lst_expr in
            build_list_tail ctx builder lst
        | Some ("empty", [lst_expr]) ->
-           let lst = compile_expr ctx md builder known_fns env lst_expr in
+           let lst = compile_expr ctx md builder known_fns env false lst_expr in
            let null_ptr = Llvm.const_null p in
            let cond = Llvm.build_icmp Llvm.Icmp.Eq lst null_ptr "is_empty" builder in
            Llvm.build_uitofp cond f64 "emptyf" builder
@@ -289,29 +290,32 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
            (match Hashtbl.find_opt known_fns name with
             | Some (ft, fn) ->
                 let arity = Array.length (Llvm.param_types ft) in
-                if List.length args = arity then
-                  let vargs = List.map (compile_expr ctx md builder known_fns env) args in
-                  Llvm.build_call ft fn (Array.of_list vargs) "dcall" builder
-                else
-                  let fv = compile_expr ctx md builder known_fns env e_fn in
-                  let av = compile_expr ctx md builder known_fns env e_arg in
+                if List.length args = arity then begin
+                  let vargs = List.map (compile_expr ctx md builder known_fns env false) args in
+                  let call = Llvm.build_call ft fn (Array.of_list vargs) "dcall" builder in
+                  if in_tail then Llvm.set_tail_call true call;
+                  call
+                end else begin
+                  let fv = compile_expr ctx md builder known_fns env false e_fn in
+                  let av = compile_expr ctx md builder known_fns env false e_arg in
                   call_closure ctx builder fv av
+                end
             | None ->
-                let fv = compile_expr ctx md builder known_fns env e_fn in
-                let av = compile_expr ctx md builder known_fns env e_arg in
+                let fv = compile_expr ctx md builder known_fns env false e_fn in
+                let av = compile_expr ctx md builder known_fns env false e_arg in
                 call_closure ctx builder fv av)
        | None ->
-           let fv = compile_expr ctx md builder known_fns env e_fn in
-           let av = compile_expr ctx md builder known_fns env e_arg in
+           let fv = compile_expr ctx md builder known_fns env false e_fn in
+           let av = compile_expr ctx md builder known_fns env false e_arg in
            call_closure ctx builder fv av)
 
   | List items ->
       let p = ptr_ty ctx in
-      let vs = List.map (compile_expr ctx md builder known_fns env) items in
+      let vs = List.map (compile_expr ctx md builder known_fns env false) items in
       List.fold_right (build_cons ctx md builder) vs (Llvm.const_null p)
 
   | Match (scrutinee_expr, arms) ->
-      let scrutinee = compile_expr ctx md builder known_fns env scrutinee_expr in
+      let scrutinee = compile_expr ctx md builder known_fns env false scrutinee_expr in
       let fn = Llvm.block_parent (Llvm.insertion_block builder) in
       let f64 = Llvm.double_type ctx in
       let p = ptr_ty ctx in
@@ -326,7 +330,7 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
         | [] -> ignore (Llvm.build_unreachable builder)
         | (pat, body) :: rest ->
             let compile_body env' =
-              let result = compile_expr ctx md builder known_fns env' body in
+              let result = compile_expr ctx md builder known_fns env' in_tail body in
               add_result result
             in
             (match pat with
@@ -395,44 +399,44 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
        | results -> Llvm.build_phi results "match_r" builder)
 
   | Seq (Let (name, ve), rest) ->
-      let v = compile_expr ctx md builder known_fns env ve in
-      compile_expr ctx md builder known_fns (StringMap.add name v env) rest
+      let v = compile_expr ctx md builder known_fns env false ve in
+      compile_expr ctx md builder known_fns (StringMap.add name v env) in_tail rest
   | Seq (a, b) ->
-      ignore (compile_expr ctx md builder known_fns env a);
-      compile_expr ctx md builder known_fns env b
+      ignore (compile_expr ctx md builder known_fns env false a);
+      compile_expr ctx md builder known_fns env in_tail b
   | Let (_, ve) ->
-      compile_expr ctx md builder known_fns env ve
+      compile_expr ctx md builder known_fns env in_tail ve
 
   | Add (a, b) ->
       Llvm.build_fadd
-        (compile_expr ctx md builder known_fns env a)
-        (compile_expr ctx md builder known_fns env b)
+        (compile_expr ctx md builder known_fns env false a)
+        (compile_expr ctx md builder known_fns env false b)
         "add" builder
   | Sub (a, b) ->
       Llvm.build_fsub
-        (compile_expr ctx md builder known_fns env a)
-        (compile_expr ctx md builder known_fns env b)
+        (compile_expr ctx md builder known_fns env false a)
+        (compile_expr ctx md builder known_fns env false b)
         "sub" builder
   | Mul (a, b) ->
       Llvm.build_fmul
-        (compile_expr ctx md builder known_fns env a)
-        (compile_expr ctx md builder known_fns env b)
+        (compile_expr ctx md builder known_fns env false a)
+        (compile_expr ctx md builder known_fns env false b)
         "mul" builder
   | Div (a, b) ->
       Llvm.build_fdiv
-        (compile_expr ctx md builder known_fns env a)
-        (compile_expr ctx md builder known_fns env b)
+        (compile_expr ctx md builder known_fns env false a)
+        (compile_expr ctx md builder known_fns env false b)
         "div" builder
   | Eq (a, b) ->
       let cmp = Llvm.build_fcmp Llvm.Fcmp.Oeq
-        (compile_expr ctx md builder known_fns env a)
-        (compile_expr ctx md builder known_fns env b)
+        (compile_expr ctx md builder known_fns env false a)
+        (compile_expr ctx md builder known_fns env false b)
         "eq" builder in
       Llvm.build_uitofp cmp (Llvm.double_type ctx) "eqf" builder
 
   | Llvm (intrinsic, args) ->
       let f64 = Llvm.double_type ctx in
-      let vargs = List.map (compile_expr ctx md builder known_fns env) args in
+      let vargs = List.map (compile_expr ctx md builder known_fns env false) args in
       let arity = List.length vargs in
       let ft = Llvm.function_type f64 (Array.make arity f64) in
       let fn = match Llvm.lookup_function intrinsic md with
@@ -480,7 +484,7 @@ let compile_fundef ctx md known_fns name args body =
          StringMap.add aname param m)
       StringMap.empty args params
   in
-  let result = compile_expr ctx md builder known_fns env body in
+  let result = compile_expr ctx md builder known_fns env true body in
   ignore (Llvm.build_ret result builder);
   fn
 
@@ -537,7 +541,7 @@ let make_jit_fn fn_name arity ee =
   match arity with
   | 1 -> F1 addr
   | 2 -> F2 addr
-  | n -> failwith (Printf.sprintf "codegen: LLVM intrinsic arity %d not supported" n)
+  | n -> failwith (Printf.sprintf "codegen: LLVM JIT intrinsic arity %d not supported" n)
 
 let call_jit_fn jit_fn float_args =
   match jit_fn, float_args with
