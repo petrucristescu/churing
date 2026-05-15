@@ -528,7 +528,70 @@ let compile_module exprs =
         ignore (compile_fundef ctx md known_fns name args body)
     | _ -> ()
   ) exprs;
-  (ctx, md)
+  (ctx, md, known_fns)
+
+(* Generate @main function for top-level non-FunDef statements. *)
+let compile_main_fn ctx md known_fns stmts =
+  let f64 = Llvm.double_type ctx in
+  let i32 = Llvm.i32_type ctx in
+  let fn = Llvm.define_function "main" (Llvm.function_type i32 [||]) md in
+  let abort_bb = Llvm.append_block ctx "abort" fn in
+  let builder = Llvm.builder_at_end ctx (Llvm.entry_block fn) in
+  let exit_ft = Llvm.function_type (Llvm.void_type ctx) [| i32 |] in
+  let exit_fn = match Llvm.lookup_function "exit" md with
+    | Some f -> f | None -> Llvm.declare_function "exit" exit_ft md in
+  let ab = Llvm.builder_at_end ctx abort_bb in
+  ignore (Llvm.build_call exit_ft exit_fn [| Llvm.const_int i32 1 |] "" ab);
+  ignore (Llvm.build_unreachable ab);
+  let _env = List.fold_left (fun env stmt ->
+    match stmt with
+    | FunDef _ -> env
+    | Let (name, expr) ->
+        let v = compile_expr ctx md builder known_fns env false expr in
+        StringMap.add name v env
+    | Assert expr ->
+        let v = compile_expr ctx md builder known_fns env false expr in
+        let cond = Llvm.build_fcmp Llvm.Fcmp.One v (Llvm.const_float f64 0.0) "ac" builder in
+        let ok_bb = Llvm.append_block ctx "assert_ok" fn in
+        ignore (Llvm.build_cond_br cond ok_bb abort_bb builder);
+        Llvm.position_at_end ok_bb builder;
+        env
+    | expr ->
+        ignore (compile_expr ctx md builder known_fns env false expr);
+        env
+  ) StringMap.empty stmts in
+  ignore (Llvm.build_ret (Llvm.const_int i32 0) builder);
+  fn
+
+let setup_target_machine () =
+  let triple = Llvm_target.Target.default_triple () in
+  let target = Llvm_target.Target.by_triple triple in
+  Llvm_target.TargetMachine.create ~triple ~cpu:"generic" ~features:""
+    ~level:Llvm_target.CodeGenOptLevel.Default
+    ~reloc_mode:Llvm_target.RelocMode.Default
+    ~code_model:Llvm_target.CodeModel.Default target
+
+let compile_to_binary ?(output="a.out") exprs =
+  ensure_initialized ();
+  let (ctx, md, known_fns) = compile_module exprs in
+  let non_fundefs = List.filter (function FunDef _ -> false | _ -> true) exprs in
+  if non_fundefs <> [] then
+    ignore (compile_main_fn ctx md known_fns non_fundefs);
+  let tm = setup_target_machine () in
+  Llvm.set_target_triple (Llvm_target.TargetMachine.triple tm) md;
+  Llvm.set_data_layout
+    (Llvm_target.DataLayout.as_string (Llvm_target.TargetMachine.data_layout tm)) md;
+  Llvm_analysis.assert_valid_module md;
+  let tmp_o = Filename.temp_file "churing" ".o" in
+  Llvm_target.TargetMachine.emit_to_file md
+    Llvm_target.CodeGenFileType.ObjectFile tmp_o tm;
+  let cmd = Printf.sprintf "cc %s -lgc -lm -o %s" (Filename.quote tmp_o) (Filename.quote output) in
+  (match Unix.system cmd with
+   | Unix.WEXITED 0 -> ()
+   | _ -> failwith ("compile_to_binary: linker failed: " ^ cmd));
+  Sys.remove tmp_o;
+  Llvm.dispose_module md;
+  Llvm.dispose_context ctx
 
 (* ── JIT infrastructure for interpreter fallback (llvm intrinsic calls) ─────── *)
 

@@ -98,6 +98,26 @@ if [ "$failed" -eq 1 ]; then
 else
     echo "All tests passed!"
 fi
+
+echo "=== Native compilation tests ==="
+native_failed=0
+for test_file in src/test/native/*.ch; do
+    [ -f "$test_file" ] || continue
+    test_name=$(basename "$test_file" .ch)
+    binary="/tmp/native_${test_name}"
+    if ! _build/default/src/churing.exe compile "$test_file" -o "$binary" 2>&1; then
+        echo "FAIL (compile): $test_name"; native_failed=1; continue
+    fi
+    expected="src/test/native/${test_name}.ch.out"
+    if [ -f "$expected" ]; then
+        actual=$("$binary" 2>&1)
+        if [ "$actual" = "$(cat "$expected")" ]; then echo "PASS: $test_name"
+        else echo "FAIL (output): $test_name"; native_failed=1; fi
+    else
+        "$binary" && echo "PASS: $test_name" || { echo "FAIL (run): $test_name"; native_failed=1; }
+    fi
+done
+[ "$native_failed" -eq 1 ] && { echo "Some native tests failed!"; exit 1; }
 EOF
 RUN chmod +x /usr/local/bin/run-tests-in-docker.sh
 USER appuser

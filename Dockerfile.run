@@ -1,7 +1,7 @@
 FROM ubuntu:22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libzstd1 libtinfo6 \
+    libzstd1 libtinfo6 binutils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY _build/default/src/churing.exe /usr/local/bin/churing

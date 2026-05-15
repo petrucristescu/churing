@@ -14,7 +14,7 @@ let test_compile_module () =
   let exprs = [
     Ast.FunDef ("my_sqrt", ["x"], Ast.Llvm ("llvm.sqrt.f64", [Ast.Var "x"]))
   ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -26,7 +26,7 @@ let test_arithmetic () =
   let exprs = [
     Ast.FunDef ("add_one", ["x"], Ast.Add (Ast.Var "x", Ast.Float 1.0))
   ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -42,7 +42,7 @@ let test_let_in_body () =
       Ast.Mul (Ast.Var "y", Ast.Float 2.0))
   in
   let exprs = [ Ast.FunDef ("f", ["x"], body) ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -55,7 +55,7 @@ let test_lambda_no_capture () =
   let lam = Ast.Lam ("v", Ast.Mul (Ast.Var "v", Ast.Float 2.0)) in
   let body = Ast.App (lam, Ast.Var "x") in
   let exprs = [ Ast.FunDef ("apply_double", ["x"], body) ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -67,7 +67,7 @@ let test_lambda_with_capture () =
   let lam = Ast.Lam ("v", Ast.Add (Ast.Var "v", Ast.Var "n")) in
   let body = Ast.App (lam, Ast.Var "x") in
   let exprs = [ Ast.FunDef ("add_n", ["n"; "x"], body) ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -85,7 +85,7 @@ let test_direct_cross_call () =
     Ast.FunDef ("quad",    ["x"],
       Ast.App (Ast.Var "double2", Ast.App (Ast.Var "double2", Ast.Var "x")));
   ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -102,7 +102,7 @@ let test_two_arg_direct_call () =
     Ast.FunDef ("square", ["x"],
       Ast.App (Ast.App (Ast.Var "my_pow", Ast.Var "x"), Ast.Float 2.0));
   ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -122,7 +122,7 @@ let test_named_fn_as_value () =
     Ast.FunDef ("use_inc", ["x"],
       Ast.App (Ast.Var "inc", Ast.Var "x"));
   ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -137,7 +137,7 @@ let test_mutual_recursion () =
     Ast.FunDef ("f2", ["x"],
       Ast.App (Ast.Var "f1", Ast.App (Ast.Var "f1", Ast.Var "x")));
   ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -158,7 +158,7 @@ let test_tail_call_direct () =
     ])
   in
   let exprs = [ Ast.FunDef ("countdown", ["n"], body) ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -178,7 +178,7 @@ let test_tail_call_mutual () =
     Ast.FunDef ("ping", ["n"], ping_body);
     Ast.FunDef ("pong", ["n"], pong_body);
   ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -202,7 +202,7 @@ let test_non_tail_call_unmarked () =
     Ast.FunDef ("countdown2", ["n"], countdown_body);
     Ast.FunDef ("not_tco",    ["n"], wrapper_body);
   ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -217,7 +217,7 @@ let test_non_tail_call_unmarked () =
 let test_list_literal () =
   let body = Ast.List [Ast.Float 1.0; Ast.Float 2.0; Ast.Float 3.0] in
   let exprs = [ Ast.FunDef ("make_list", [], body) ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -234,7 +234,7 @@ let test_match_list_pattern () =
     ])
   in
   let exprs = [ Ast.FunDef ("head_or_zero", [xs_param], body) ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -251,7 +251,7 @@ let test_match_int_pattern () =
     ])
   in
   let exprs = [ Ast.FunDef ("double_nonzero", ["n"], body) ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
@@ -270,7 +270,7 @@ let test_recursive_list_fn () =
     ])
   in
   let exprs = [ Ast.FunDef ("sum", ["xs"], body) ] in
-  let (ctx, md) = Codegen.compile_module exprs in
+  let (ctx, md, _) = Codegen.compile_module exprs in
   let ir = Llvm.string_of_llmodule md in
   Llvm.dispose_module md;
   Llvm.dispose_context ctx;
