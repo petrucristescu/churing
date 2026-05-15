@@ -285,6 +285,63 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
            let null_ptr = Llvm.const_null p in
            let cond = Llvm.build_icmp Llvm.Icmp.Eq lst null_ptr "is_empty" builder in
            Llvm.build_uitofp cond f64 "emptyf" builder
+       (* ── Comparison ops ── *)
+       | Some ("gt",  [a; b]) ->
+           let av = compile_expr ctx md builder known_fns env false a in
+           let bv = compile_expr ctx md builder known_fns env false b in
+           Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Ogt av bv "gt" builder) f64 "gtf" builder
+       | Some ("lt",  [a; b]) ->
+           let av = compile_expr ctx md builder known_fns env false a in
+           let bv = compile_expr ctx md builder known_fns env false b in
+           Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Olt av bv "lt" builder) f64 "ltf" builder
+       | Some ("gte", [a; b]) ->
+           let av = compile_expr ctx md builder known_fns env false a in
+           let bv = compile_expr ctx md builder known_fns env false b in
+           Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Oge av bv "gte" builder) f64 "gtef" builder
+       | Some ("lte", [a; b]) ->
+           let av = compile_expr ctx md builder known_fns env false a in
+           let bv = compile_expr ctx md builder known_fns env false b in
+           Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Ole av bv "lte" builder) f64 "ltef" builder
+       | Some ("not", [x]) ->
+           let xv = compile_expr ctx md builder known_fns env false x in
+           Llvm.build_uitofp
+             (Llvm.build_fcmp Llvm.Fcmp.Oeq xv (Llvm.const_float f64 0.0) "not" builder)
+             f64 "notf" builder
+       | Some ("and", [a; b]) ->
+           let av = compile_expr ctx md builder known_fns env false a in
+           let bv = compile_expr ctx md builder known_fns env false b in
+           let ca = Llvm.build_fcmp Llvm.Fcmp.One av (Llvm.const_float f64 0.0) "ca" builder in
+           let cb = Llvm.build_fcmp Llvm.Fcmp.One bv (Llvm.const_float f64 0.0) "cb" builder in
+           Llvm.build_uitofp (Llvm.build_and ca cb "andb" builder) f64 "andf" builder
+       | Some ("or", [a; b]) ->
+           let av = compile_expr ctx md builder known_fns env false a in
+           let bv = compile_expr ctx md builder known_fns env false b in
+           let ca = Llvm.build_fcmp Llvm.Fcmp.One av (Llvm.const_float f64 0.0) "ca" builder in
+           let cb = Llvm.build_fcmp Llvm.Fcmp.One bv (Llvm.const_float f64 0.0) "cb" builder in
+           Llvm.build_uitofp (Llvm.build_or ca cb "orb" builder) f64 "orf" builder
+       (* ── print via printf ── *)
+       | Some ("print", [val_expr]) ->
+           let v = compile_expr ctx md builder known_fns env false val_expr in
+           let i8p = Llvm.pointer_type ctx in
+           let printf_ft = Llvm.var_arg_function_type (Llvm.i32_type ctx) [| i8p |] in
+           let printf_fn = match Llvm.lookup_function "printf" md with
+             | Some f -> f
+             | None -> Llvm.declare_function "printf" printf_ft md in
+           let fmt_str = "%g\n\x00" in
+           let fmt_const = Llvm.const_string ctx fmt_str in
+           let fmt_global = match Llvm.lookup_global ".fmt_g" md with
+             | Some g -> g
+             | None ->
+                 let g = Llvm.define_global ".fmt_g" fmt_const md in
+                 Llvm.set_linkage Llvm.Linkage.Private g;
+                 Llvm.set_global_constant true g;
+                 g in
+           let fmt_ptr = Llvm.build_gep (Llvm.type_of fmt_const)
+             fmt_global [| Llvm.const_int (Llvm.i64_type ctx) 0;
+                            Llvm.const_int (Llvm.i64_type ctx) 0 |]
+             "fmt" builder in
+           ignore (Llvm.build_call printf_ft printf_fn [| fmt_ptr; v |] "" builder);
+           v
        (* ── Known function direct call ── *)
        | Some (name, args) ->
            (match Hashtbl.find_opt known_fns name with
@@ -568,7 +625,7 @@ let setup_target_machine () =
   let target = Llvm_target.Target.by_triple triple in
   Llvm_target.TargetMachine.create ~triple ~cpu:"generic" ~features:""
     ~level:Llvm_target.CodeGenOptLevel.Default
-    ~reloc_mode:Llvm_target.RelocMode.Default
+    ~reloc_mode:Llvm_target.RelocMode.PIC
     ~code_model:Llvm_target.CodeModel.Default target
 
 let compile_to_binary ?(output="a.out") exprs =
