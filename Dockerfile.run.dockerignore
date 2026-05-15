@@ -1,0 +1,8 @@
+.git
+_build/_tests
+_build/default/src/rust
+_opam
+examples/digits/data/train
+test/
+*.opam
+src/rust/target
