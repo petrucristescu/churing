@@ -144,6 +144,73 @@ let test_mutual_recursion () =
   Alcotest.(check bool) "f1 present" true (contains ir "f1");
   Alcotest.(check bool) "f2 present" true (contains ir "f2")
 
+(* ── #93 tests ──────────────────────────────────────────────────────────────── *)
+
+(* List literal [1.0, 2.0, 3.0] should emit GC_malloc calls and GEP *)
+let test_list_literal () =
+  let body = Ast.List [Ast.Float 1.0; Ast.Float 2.0; Ast.Float 3.0] in
+  let exprs = [ Ast.FunDef ("make_list", [], body) ] in
+  let (ctx, md) = Codegen.compile_module exprs in
+  let ir = Llvm.string_of_llmodule md in
+  Llvm.dispose_module md;
+  Llvm.dispose_context ctx;
+  Alcotest.(check bool) "GC_malloc declared" true (contains ir "GC_malloc");
+  Alcotest.(check bool) "getelementptr present" true (contains ir "getelementptr")
+
+(* match xs | [] -> 0.0 | h :: t -> h  — nil/cons dispatch *)
+let test_match_list_pattern () =
+  let xs_param = "xs" in
+  let body =
+    Ast.Match (Ast.Var xs_param, [
+      (Ast.PList [], Ast.Float 0.0);
+      (Ast.PCons (Ast.PVar "h", Ast.PWild), Ast.Var "h");
+    ])
+  in
+  let exprs = [ Ast.FunDef ("head_or_zero", [xs_param], body) ] in
+  let (ctx, md) = Codegen.compile_module exprs in
+  let ir = Llvm.string_of_llmodule md in
+  Llvm.dispose_module md;
+  Llvm.dispose_context ctx;
+  Alcotest.(check bool) "icmp for nil check" true (contains ir "icmp");
+  Alcotest.(check bool) "phi for match result" true (contains ir "phi");
+  Alcotest.(check bool) "match_end block" true (contains ir "match_end")
+
+(* match n | 0 -> 1.0 | x -> x * 2.0  — integer pattern dispatch *)
+let test_match_int_pattern () =
+  let body =
+    Ast.Match (Ast.Var "n", [
+      (Ast.PInt 0, Ast.Float 1.0);
+      (Ast.PVar "x", Ast.Mul (Ast.Var "x", Ast.Float 2.0));
+    ])
+  in
+  let exprs = [ Ast.FunDef ("double_nonzero", ["n"], body) ] in
+  let (ctx, md) = Codegen.compile_module exprs in
+  let ir = Llvm.string_of_llmodule md in
+  Llvm.dispose_module md;
+  Llvm.dispose_context ctx;
+  Alcotest.(check bool) "fcmp for int pattern" true (contains ir "fcmp");
+  Alcotest.(check bool) "phi in result"        true (contains ir "phi")
+
+(* ~sum xs (match xs | [] -> 0.0 | h :: t -> h + sum t)
+   Verifies: list arg detected as ptr, self-recursive call, phi *)
+let test_recursive_list_fn () =
+  let body =
+    Ast.Match (Ast.Var "xs", [
+      (Ast.PList [], Ast.Float 0.0);
+      (Ast.PCons (Ast.PVar "h", Ast.PVar "t"),
+       Ast.Add (Ast.Var "h",
+         Ast.App (Ast.Var "sum", Ast.Var "t")));
+    ])
+  in
+  let exprs = [ Ast.FunDef ("sum", ["xs"], body) ] in
+  let (ctx, md) = Codegen.compile_module exprs in
+  let ir = Llvm.string_of_llmodule md in
+  Llvm.dispose_module md;
+  Llvm.dispose_context ctx;
+  Alcotest.(check bool) "sum defined"   true (contains ir "sum");
+  Alcotest.(check bool) "recursive call" true (contains ir "call");
+  Alcotest.(check bool) "phi node"      true (contains ir "phi")
+
 let () =
   Alcotest.run "llvm" [
     "codegen", [
@@ -156,5 +223,9 @@ let () =
       Alcotest.test_case "two-arg direct call flattened"      `Quick test_two_arg_direct_call;
       Alcotest.test_case "named function referenced by Var"   `Quick test_named_fn_as_value;
       Alcotest.test_case "two-pass enables mutual references" `Quick test_mutual_recursion;
+      Alcotest.test_case "List literal emits GC_malloc + GEP" `Quick test_list_literal;
+      Alcotest.test_case "match list nil/cons dispatch"       `Quick test_match_list_pattern;
+      Alcotest.test_case "match integer pattern fcmp"         `Quick test_match_int_pattern;
+      Alcotest.test_case "recursive list function compiles"   `Quick test_recursive_list_fn;
     ]
   ]

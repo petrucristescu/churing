@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install dependencies (matching GitHub Actions setup)
 RUN apt-get update && \
     apt-get install -y bubblewrap wget gcc g++ make patch unzip m4 git ca-certificates bzip2 default-mysql-client \
-        cmake lsb-release software-properties-common gnupg && \
+        cmake lsb-release software-properties-common gnupg libgc-dev && \
     rm -rf /var/lib/apt/lists/*
 
 # Install LLVM 18 from official apt repo (llvm.14 conflicts with OCaml 5.x; opam llvm needs llvm-18-dev, libzstd-dev, zlib1g-dev)
