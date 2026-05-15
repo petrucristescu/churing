@@ -27,7 +27,9 @@ let () =
         exit 1
       );
       let input = read_file !filename in
-      Eval.source_dir := Filename.dirname !filename;
+      let dir = Filename.dirname !filename in
+      Eval.source_dir := dir;
+      Codegen.source_dir := dir;
       (try
         let exprs = Parser.parse_and_infer ~show_types:false input in
         Codegen.compile_to_binary ~output:!output exprs

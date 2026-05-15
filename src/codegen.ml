@@ -11,6 +11,7 @@ external call_f2 : nativeint -> float -> float -> float = "caml_call_f2"
 
 let jit_initialized = ref false
 let lam_counter = ref 0
+let source_dir = ref ""
 
 let ensure_initialized () =
   if not !jit_initialized then begin
@@ -152,11 +153,14 @@ let wrap_fn_as_closure ctx md builder fn name =
 
 (* ── Static type analysis for pre-pass ─────────────────────────────────────── *)
 
-(* Check if arg_name is used as a list (cons/nil match) in body *)
+(* Check if arg_name is directly matched with cons/nil patterns in body *)
 let rec arg_is_list_in_body arg_name = function
   | Match (Var x, arms) when x = arg_name ->
       List.exists (fun (pat, _) ->
         match pat with PCons _ | PList _ -> true | _ -> false) arms
+  | Match (e, arms) ->
+      arg_is_list_in_body arg_name e ||
+      List.exists (fun (_, b) -> arg_is_list_in_body arg_name b) arms
   | Seq (a, b) -> arg_is_list_in_body arg_name a || arg_is_list_in_body arg_name b
   | App (f, a) -> arg_is_list_in_body arg_name f || arg_is_list_in_body arg_name a
   | Lam (x, body) when x <> arg_name -> arg_is_list_in_body arg_name body
@@ -169,17 +173,18 @@ let rec cons_tail_vars = function
   | PCons (_, tp) -> cons_tail_vars tp
   | _ -> StringSet.empty
 
-(* Check if body produces a list (ptr) result.
-   list_fns: known list-returning function names.
-   list_vars: local vars known to hold lists (from pattern bindings). *)
-let rec body_returns_list_v list_fns list_vars = function
+(* Check if body produces a list result.
+   list_fns: known list-returning functions.
+   list_vars: local vars known to be lists (from pattern bindings).
+   is_list_arg: test if a var name is a list-typed argument. *)
+let rec body_returns_list_v list_fns list_vars is_list_arg = function
   | List _ -> true
-  | Var x -> StringSet.mem x list_vars || StringSet.mem x list_fns
+  | Var x -> StringSet.mem x list_vars || StringSet.mem x list_fns || is_list_arg x
   | Match (_, arms) ->
       List.exists (fun (pat, body) ->
         let extra = cons_tail_vars pat in
-        body_returns_list_v list_fns (StringSet.union list_vars extra) body) arms
-  | Seq (_, b) -> body_returns_list_v list_fns list_vars b
+        body_returns_list_v list_fns (StringSet.union list_vars extra) is_list_arg body) arms
+  | Seq (_, b) -> body_returns_list_v list_fns list_vars is_list_arg b
   | App (f, _) ->
       (match flatten_app [] f with
        | Some ("cons", _) -> true
@@ -187,7 +192,8 @@ let rec body_returns_list_v list_fns list_vars = function
        | None -> false)
   | _ -> false
 
-let body_returns_list list_fns body = body_returns_list_v list_fns StringSet.empty body
+let body_returns_list list_fns body =
+  body_returns_list_v list_fns StringSet.empty (fun _ -> false) body
 
 (* ── Main expression compiler ───────────────────────────────────────────────── *)
 (* known_fns: name → (function_type, function_value)
@@ -504,24 +510,19 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
 
   | e -> failwith ("codegen: unsupported expression: " ^ string_of_expr e)
 
-(* Compile a named function body into its pre-declared (or freshly declared) LLVM function. *)
+(* Compile a named function body into its pre-declared (or freshly declared) LLVM function.
+   When called from compile_module, the function is already in known_fns (from the pre-pass)
+   and has a mangled LLVM name to prevent libc symbol conflicts.
+   When called from the JIT path, known_fns is empty and we define a fresh function. *)
 let compile_fundef ctx md known_fns name args body =
   let f64 = Llvm.double_type ctx in
   let p = ptr_ty ctx in
-  let fn, ft = match Llvm.lookup_function name md with
-    | Some f ->
-        (* Already declared by the pre-pass — retrieve the stored function type. *)
-        (match Hashtbl.find_opt known_fns name with
-         | Some (ft, _) -> (f, ft)
-         | None ->
-             (* JIT path: function appears in module but not in known_fns yet *)
-             let arg_types = List.map
-               (fun a -> if arg_is_list_in_body a body then p else f64) args in
-             let ret_type = if body_returns_list StringSet.empty body then p else f64 in
-             let ft = Llvm.function_type ret_type (Array.of_list arg_types) in
-             Hashtbl.add known_fns name (ft, f);
-             (f, ft))
+  let fn, ft = match Hashtbl.find_opt known_fns name with
+    | Some (ft, fn) ->
+        (* Pre-pass already declared this function — use it directly. *)
+        (fn, ft)
     | None ->
+        (* JIT path: compute types from body analysis and define fresh. *)
         let arg_types = List.map
           (fun a -> if arg_is_list_in_body a body then p else f64) args in
         let ret_type = if body_returns_list StringSet.empty body then p else f64 in
@@ -545,46 +546,119 @@ let compile_fundef ctx md known_fns name args body =
   ignore (Llvm.build_ret result builder);
   fn
 
+(* Find index of name in args list, or None. *)
+let find_arg_index args x =
+  let rec go i = function
+    | [] -> None
+    | a :: _ when a = x -> Some i
+    | _ :: rest -> go (i+1) rest
+  in
+  go 0 args
+
 (* Compile a list of top-level expressions into an LLVM module.
-   Two-pass: pre-declare all functions (enabling mutual recursion), then compile bodies.
-   An additional fixpoint determines which functions return list (ptr) vs f64. *)
+   Combined fixpoint: list-returning functions and list-typed args inform each other. *)
 let compile_module exprs =
   let ctx = Llvm.create_context () in
   let md  = Llvm.create_module ctx "churing" in
   let known_fns : (string, Llvm.lltype * Llvm.llvalue) Hashtbl.t = Hashtbl.create 16 in
   let f64 = Llvm.double_type ctx in
   let p = ptr_ty ctx in
-  (* Fixpoint: find all list-returning functions *)
+  let fundefs = List.filter_map (function
+    | FunDef (name, args, body) -> Some (name, args, body)
+    | _ -> None
+  ) exprs in
+  (* Combined fixpoint: list_fns (return type) and list_arg_tbl (arg types) *)
   let list_fns = ref StringSet.empty in
+  let list_arg_tbl : (string * int, bool) Hashtbl.t = Hashtbl.create 16 in
+  let mark fn i =
+    if not (Hashtbl.mem list_arg_tbl (fn, i)) then
+      (Hashtbl.replace list_arg_tbl (fn, i) true; true)
+    else false
+  in
+  (* Seed: arg directly matched with cons/nil *)
+  List.iter (fun (name, args, body) ->
+    List.iteri (fun i a ->
+      if arg_is_list_in_body a body then ignore (mark name i)) args
+  ) fundefs;
+  (* Seed: arg appears as cons tail — cons _ arg *)
+  List.iter (fun (name, args, body) ->
+    let rec scan = function
+      | App (App (Var "cons", _), Var x) ->
+          (match find_arg_index args x with Some i -> ignore (mark name i) | None -> ())
+      | App (f, a) -> scan f; scan a
+      | Match (e, arms) -> scan e; List.iter (fun (_, b) -> scan b) arms
+      | Seq (a, b) -> scan a; scan b
+      | Lam (_, b) -> scan b | Let (_, v) -> scan v | _ -> ()
+    in scan body) fundefs;
+  (* Interleaved fixpoint: list_fns and list_arg_tbl inform each other *)
   let changed = ref true in
   while !changed do
     changed := false;
-    List.iter (function
-      | FunDef (name, _, body) ->
-          if not (StringSet.mem name !list_fns) && body_returns_list !list_fns body then begin
-            list_fns := StringSet.add name !list_fns;
-            changed := true
-          end
-      | _ -> ()
-    ) exprs
+    List.iter (fun (name, args, body) ->
+      (* is_list_arg: check if a Var in this fn's body is a list-typed arg *)
+      let is_list_arg x =
+        match find_arg_index args x with
+        | Some i -> Hashtbl.mem list_arg_tbl (name, i)
+        | None -> false
+      in
+      (* Update list_fns: use arg type info to detect list-returning fns *)
+      if not (StringSet.mem name !list_fns) &&
+         body_returns_list_v !list_fns StringSet.empty is_list_arg body then begin
+        list_fns := StringSet.add name !list_fns;
+        changed := true
+      end;
+      (* Update list_arg_tbl: arg returned as Var from a list-returning fn *)
+      if body_returns_list_v !list_fns StringSet.empty is_list_arg body then begin
+        let rec check_ret = function
+          | Var x ->
+              (match find_arg_index args x with
+               | Some i -> if mark name i then changed := true
+               | None -> ())
+          | Match (_, arms) -> List.iter (fun (_, b) -> check_ret b) arms
+          | Seq (_, b) -> check_ret b
+          | _ -> ()
+        in check_ret body
+      end;
+      (* Update list_arg_tbl: propagate via call sites *)
+      let rec walk = function
+        | App _ as app ->
+            (match flatten_app [] app with
+             | Some (gname, call_args) ->
+                 List.iteri (fun j call_arg ->
+                   if Hashtbl.mem list_arg_tbl (gname, j) then
+                     match call_arg with
+                     | Var x ->
+                         (match find_arg_index args x with
+                          | Some i -> if mark name i then changed := true
+                          | None -> ())
+                     | _ -> ()
+                 ) call_args
+             | None -> ());
+            (match app with App (f, a) -> walk f; walk a | _ -> ())
+        | Match (e, arms) -> walk e; List.iter (fun (_, b) -> walk b) arms
+        | Seq (a, b) -> walk a; walk b
+        | Lam (_, b) -> walk b | Let (_, v) -> walk v | _ -> ()
+      in walk body
+    ) fundefs
   done;
-  (* Pre-pass: declare all functions with correct LLVM types *)
-  List.iter (function
-    | FunDef (name, args, body) ->
-        let arg_types = List.map
-          (fun a -> if arg_is_list_in_body a body then p else f64) args in
-        let ret_type = if StringSet.mem name !list_fns then p else f64 in
-        let ft = Llvm.function_type ret_type (Array.of_list arg_types) in
-        let fn = Llvm.define_function name ft md in
-        Hashtbl.add known_fns name (ft, fn)
-    | _ -> ()
-  ) exprs;
+  (* Pre-pass: declare all functions with correct LLVM types.
+     Names are mangled to _ch_<name> to prevent libc symbol conflicts: LLVM may lower
+     llvm.floor.f64 to `call floor` on generic targets; without mangling, the linker
+     resolves that to our @floor, causing infinite recursion. *)
+  List.iter (fun (name, args, _body) ->
+    let arg_types = List.mapi
+      (fun i _ -> if Hashtbl.mem list_arg_tbl (name, i) then p else f64) args in
+    let ret_type = if StringSet.mem name !list_fns then p else f64 in
+    let ft = Llvm.function_type ret_type (Array.of_list arg_types) in
+    let llvm_name = "_ch_" ^ name in
+    let fn = Llvm.define_function llvm_name ft md in
+    Llvm.set_linkage Llvm.Linkage.Internal fn;
+    Hashtbl.add known_fns name (ft, fn)
+  ) fundefs;
   (* Compilation pass: fill function bodies *)
-  List.iter (function
-    | FunDef (name, args, body) ->
-        ignore (compile_fundef ctx md known_fns name args body)
-    | _ -> ()
-  ) exprs;
+  List.iter (fun (name, args, body) ->
+    ignore (compile_fundef ctx md known_fns name args body)
+  ) fundefs;
   (ctx, md, known_fns)
 
 (* Generate @main function for top-level non-FunDef statements. *)
@@ -628,9 +702,34 @@ let setup_target_machine () =
     ~reloc_mode:Llvm_target.RelocMode.PIC
     ~code_model:Llvm_target.CodeModel.Default target
 
+(* Load FunDef nodes from a stdlib file for the native compile pipeline. *)
+let load_stdlib_fundefs filename =
+  let possible_paths = [
+    Filename.concat !source_dir "lib";
+    Filename.concat (Filename.dirname !source_dir) "lib";
+    Filename.concat (Filename.dirname Sys.argv.(0)) "../lib";
+    Filename.concat (Filename.dirname Sys.argv.(0)) "../../src/lib";
+    Sys.getcwd () ^ "/src/lib";
+  ] in
+  let rec find = function
+    | [] -> []
+    | dir :: rest ->
+        let path = Filename.concat dir filename in
+        if Sys.file_exists path then begin
+          let ic = open_in path in
+          let src = really_input_string ic (in_channel_length ic) in
+          close_in ic;
+          List.filter (function FunDef _ -> true | _ -> false)
+            (Parser.parse src)
+        end else find rest
+  in
+  find possible_paths
+
 let compile_to_binary ?(output="a.out") exprs =
   ensure_initialized ();
-  let (ctx, md, known_fns) = compile_module exprs in
+  let stdlib = load_stdlib_fundefs "math.ch" @ load_stdlib_fundefs "prelude.ch" in
+  let all_exprs = stdlib @ exprs in
+  let (ctx, md, known_fns) = compile_module all_exprs in
   let non_fundefs = List.filter (function FunDef _ -> false | _ -> true) exprs in
   if non_fundefs <> [] then
     ignore (compile_main_fn ctx md known_fns non_fundefs);

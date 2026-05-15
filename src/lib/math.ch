@@ -17,6 +17,19 @@
 ~min a,b (llvm "llvm.minnum.f64" a b)
 ~max a,b (llvm "llvm.maxnum.f64" a b)
 
+# Remaining trig/math — libm (linked with -lm)
+~tan x   (llvm "tan" x)
+~asin x  (llvm "asin" x)
+~acos x  (llvm "acos" x)
+~atan x  (llvm "atan" x)
+~tanh x  (llvm "tanh" x)
+
+# Rounding — LLVM intrinsics
+~floor x (llvm "llvm.floor.f64" x)
+~ceil x  (llvm "llvm.ceil.f64" x)
+~round x (llvm "llvm.round.f64" x)
+~abs x   (llvm "llvm.fabs.f64" x)
+
 # Pure Churing helpers
 ~square x (x * x)
 ~cube x (x * x * x)
