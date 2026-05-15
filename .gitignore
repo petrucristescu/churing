@@ -2,3 +2,4 @@
 _build
 .claude
 test_results
+src/rust/target

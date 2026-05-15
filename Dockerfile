@@ -29,6 +29,15 @@ RUN groupadd --system appuser && \
 USER appuser
 WORKDIR /app
 
+# Install Rust (stable) for the churing-runtime staticlib
+RUN wget -qO /tmp/rustup-init.sh https://sh.rustup.rs && \
+    chmod +x /tmp/rustup-init.sh && \
+    /tmp/rustup-init.sh -y --no-modify-path && \
+    rm /tmp/rustup-init.sh
+ENV PATH="/home/appuser/.cargo/bin:${PATH}"
+ENV CARGO_HOME=/home/appuser/.cargo
+ENV RUSTUP_HOME=/home/appuser/.rustup
+
 # Initialize opam with OCaml 5.1.1 (same as CI)
 # Set OPAMROOT explicitly so opam works even when HOME is overridden at runtime
 ENV OPAMROOT=/home/appuser/.opam
@@ -45,6 +54,7 @@ COPY <<'EOF' /usr/local/bin/run-tests-in-docker.sh
 #!/usr/bin/env bash
 set -e
 
+export PATH="/home/appuser/.cargo/bin:$PATH"
 eval "$(opam env)"
 dune build src/churing.exe
 

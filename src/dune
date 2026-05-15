@@ -9,11 +9,21 @@
   (with-stdout-to %{target}
    (run %{exe:gen_version.exe} %{dep:../VERSION}))))
 
+(rule
+ (targets libchuring_runtime.a)
+ (deps (source_tree rust))
+ (action
+  (progn
+   (chdir %{workspace_root}
+    (run cargo build --manifest-path src/rust/Cargo.toml --release))
+   (run cp %{workspace_root}/src/rust/target/release/libchuring_runtime.a
+        libchuring_runtime.a))))
+
 (library
  (name churing_lib)
  (modules parser eval ast types infer codegen version)
- (foreign_stubs (language c) (names codegen_stubs))
- (libraries unix llvm llvm.executionengine llvm.all_backends)
+ (foreign_archives churing_runtime)
+ (libraries unix llvm llvm.executionengine llvm.all_backends llvm.target llvm.analysis)
  (wrapped false)
  (flags (:standard -w -27)))
 
