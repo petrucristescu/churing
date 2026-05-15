@@ -11,6 +11,7 @@ external call_f2 : nativeint -> float -> float -> float = "caml_call_f2"
 
 let jit_initialized = ref false
 let lam_counter = ref 0
+let str_counter = ref 0
 let source_dir = ref ""
 
 let ensure_initialized () =
@@ -195,6 +196,12 @@ let rec body_returns_list_v list_fns list_vars is_list_arg = function
 let body_returns_list list_fns body =
   body_returns_list_v list_fns StringSet.empty (fun _ -> false) body
 
+(* Get or declare an external C function in the module *)
+let declare_ext md name ft =
+  match Llvm.lookup_function name md with
+  | Some f -> f
+  | None -> Llvm.declare_function name ft md
+
 (* ── Main expression compiler ───────────────────────────────────────────────── *)
 (* known_fns: name → (function_type, function_value)
    Storing ft explicitly avoids relying on Llvm.type_of which may return ptr in LLVM 18.
@@ -204,6 +211,18 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
   | Int n   -> Llvm.const_float (Llvm.double_type ctx) (float_of_int n)
   | Float f -> Llvm.const_float (Llvm.double_type ctx) f
   | Bool b  -> Llvm.const_float (Llvm.double_type ctx) (if b then 1.0 else 0.0)
+
+  | Str s ->
+      let bytes = s ^ "\x00" in
+      let const_val = Llvm.const_string ctx bytes in
+      let n = !str_counter in
+      incr str_counter;
+      let gname = Printf.sprintf ".str%d" n in
+      let g = Llvm.define_global gname const_val md in
+      Llvm.set_linkage Llvm.Linkage.Private g;
+      Llvm.set_global_constant true g;
+      let z = Llvm.const_int (Llvm.i64_type ctx) 0 in
+      Llvm.build_gep (Llvm.type_of const_val) g [| z; z |] "strp" builder
 
   | Var x ->
     (match StringMap.find_opt x env with
@@ -348,6 +367,75 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
              "fmt" builder in
            ignore (Llvm.build_call printf_ft printf_fn [| fmt_ptr; v |] "" builder);
            v
+       (* ── String operations ── *)
+       | Some ("length", [s_expr]) ->
+           let sv = compile_expr ctx md builder known_fns env false s_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p |] in
+           Llvm.build_call ft (declare_ext md "churing_str_length" ft) [| sv |] "slen" builder
+       | Some ("concat", [a_expr; b_expr]) ->
+           let av = compile_expr ctx md builder known_fns env false a_expr in
+           let bv = compile_expr ctx md builder known_fns env false b_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_concat" ft) [| av; bv |] "concat" builder
+       | Some ("substring", [s_expr; st_expr; ln_expr]) ->
+           let sv = compile_expr ctx md builder known_fns env false s_expr in
+           let stv = compile_expr ctx md builder known_fns env false st_expr in
+           let lnv = compile_expr ctx md builder known_fns env false ln_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p; f64; f64 |] in
+           Llvm.build_call ft (declare_ext md "churing_substring" ft) [| sv; stv; lnv |] "substr" builder
+       | Some ("uppercase", [s_expr]) ->
+           let sv = compile_expr ctx md builder known_fns env false s_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p |] in
+           Llvm.build_call ft (declare_ext md "churing_uppercase" ft) [| sv |] "ucase" builder
+       | Some ("lowercase", [s_expr]) ->
+           let sv = compile_expr ctx md builder known_fns env false s_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p |] in
+           Llvm.build_call ft (declare_ext md "churing_lowercase" ft) [| sv |] "lcase" builder
+       | Some ("trim", [s_expr]) ->
+           let sv = compile_expr ctx md builder known_fns env false s_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p |] in
+           Llvm.build_call ft (declare_ext md "churing_trim" ft) [| sv |] "trim" builder
+       | Some ("contains", [s_expr; sub_expr]) ->
+           let sv = compile_expr ctx md builder known_fns env false s_expr in
+           let subv = compile_expr ctx md builder known_fns env false sub_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_contains" ft) [| sv; subv |] "contains" builder
+       | Some ("startsWith", [s_expr; pre_expr]) ->
+           let sv = compile_expr ctx md builder known_fns env false s_expr in
+           let prev = compile_expr ctx md builder known_fns env false pre_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_starts_with" ft) [| sv; prev |] "sw" builder
+       | Some ("endsWith", [s_expr; suf_expr]) ->
+           let sv = compile_expr ctx md builder known_fns env false s_expr in
+           let sufv = compile_expr ctx md builder known_fns env false suf_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_ends_with" ft) [| sv; sufv |] "ew" builder
+       | Some ("replace", [s_expr; from_expr; to_expr]) ->
+           let sv = compile_expr ctx md builder known_fns env false s_expr in
+           let fromv = compile_expr ctx md builder known_fns env false from_expr in
+           let tov = compile_expr ctx md builder known_fns env false to_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p; p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_replace" ft) [| sv; fromv; tov |] "replace" builder
+       | Some (("toString" | "str"), [n_expr]) ->
+           let nv = compile_expr ctx md builder known_fns env false n_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| f64 |] in
+           Llvm.build_call ft (declare_ext md "churing_to_string" ft) [| nv |] "tostr" builder
+       | Some ("toFloat", [s_expr]) ->
+           let sv = compile_expr ctx md builder known_fns env false s_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p |] in
+           Llvm.build_call ft (declare_ext md "churing_to_float" ft) [| sv |] "tofloat" builder
        (* ── Known function direct call ── *)
        | Some (name, args) ->
            (match Hashtbl.find_opt known_fns name with
@@ -491,11 +579,21 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
         (compile_expr ctx md builder known_fns env false b)
         "div" builder
   | Eq (a, b) ->
-      let cmp = Llvm.build_fcmp Llvm.Fcmp.Oeq
-        (compile_expr ctx md builder known_fns env false a)
-        (compile_expr ctx md builder known_fns env false b)
-        "eq" builder in
-      Llvm.build_uitofp cmp (Llvm.double_type ctx) "eqf" builder
+      let f64 = Llvm.double_type ctx in
+      let p = ptr_ty ctx in
+      let av = compile_expr ctx md builder known_fns env false a in
+      let bv = compile_expr ctx md builder known_fns env false b in
+      (match Llvm.classify_type (Llvm.type_of av) with
+       | Llvm.TypeKind.Pointer ->
+           let strcmp_ft = Llvm.function_type (Llvm.i32_type ctx) [| p; p |] in
+           let strcmp_fn = declare_ext md "strcmp" strcmp_ft in
+           let cmp = Llvm.build_call strcmp_ft strcmp_fn [| av; bv |] "scmp" builder in
+           let z = Llvm.const_int (Llvm.i32_type ctx) 0 in
+           Llvm.build_uitofp (Llvm.build_icmp Llvm.Icmp.Eq cmp z "seq" builder) f64 "seqf" builder
+       | _ ->
+           Llvm.build_uitofp
+             (Llvm.build_fcmp Llvm.Fcmp.Oeq av bv "eq" builder)
+             f64 "eqf" builder)
 
   | Llvm (intrinsic, args) ->
       let f64 = Llvm.double_type ctx in
@@ -725,6 +823,14 @@ let load_stdlib_fundefs filename =
   in
   find possible_paths
 
+let find_runtime_lib () =
+  let candidates = [
+    Filename.concat (Filename.dirname Sys.argv.(0)) "libchuring_runtime_native.a";
+    Filename.concat (Sys.getcwd ()) "_build/default/src/libchuring_runtime_native.a";
+    Filename.concat (Filename.dirname Sys.argv.(0)) "../libchuring_runtime_native.a";
+  ] in
+  List.find_opt Sys.file_exists candidates
+
 let compile_to_binary ?(output="a.out") exprs =
   ensure_initialized ();
   let stdlib = load_stdlib_fundefs "math.ch" @ load_stdlib_fundefs "prelude.ch" in
@@ -741,7 +847,10 @@ let compile_to_binary ?(output="a.out") exprs =
   let tmp_o = Filename.temp_file "churing" ".o" in
   Llvm_target.TargetMachine.emit_to_file md
     Llvm_target.CodeGenFileType.ObjectFile tmp_o tm;
-  let cmd = Printf.sprintf "cc %s -lgc -lm -o %s" (Filename.quote tmp_o) (Filename.quote output) in
+  let rt_flag = match find_runtime_lib () with
+    | Some p -> " " ^ Filename.quote p | None -> "" in
+  let cmd = Printf.sprintf "cc %s%s -lgc -lm -o %s"
+    (Filename.quote tmp_o) rt_flag (Filename.quote output) in
   (match Unix.system cmd with
    | Unix.WEXITED 0 -> ()
    | _ -> failwith ("compile_to_binary: linker failed: " ^ cmd));

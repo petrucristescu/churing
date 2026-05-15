@@ -11,7 +11,7 @@
 
 (rule
  (targets libchuring_runtime.a)
- (deps (source_tree rust))
+ (deps (source_tree rust/src) rust/Cargo.toml)
  (action
   (progn
    (chdir %{workspace_root}
@@ -19,10 +19,20 @@
    (run cp %{workspace_root}/src/rust/target/release/libchuring_runtime.a
         libchuring_runtime.a))))
 
+(rule
+ (targets libchuring_runtime_native.a)
+ (deps (source_tree rust/native))
+ (action
+  (progn
+   (chdir %{workspace_root}
+    (run cargo build --manifest-path src/rust/native/Cargo.toml --release))
+   (run cp %{workspace_root}/src/rust/native/target/release/libchuring_runtime_native.a
+        libchuring_runtime_native.a))))
+
 (library
  (name churing_lib)
  (modules parser eval ast types infer codegen version)
- (foreign_archives churing_runtime)
+ (foreign_archives churing_runtime churing_runtime_native)
  (libraries unix llvm llvm.executionengine llvm.all_backends llvm.target llvm.analysis)
  (wrapped false)
  (flags (:standard -w -27)))
