@@ -38,6 +38,15 @@ let fresh_lam () =
   incr lam_counter;
   Printf.sprintf "_lam_%d" n
 
+(* Primitive names handled inline in the App case — not in known_fns or env *)
+let inline_primitives = StringSet.of_list [
+  "cons"; "head"; "tail"; "empty";
+  "gt"; "lt"; "gte"; "lte"; "not"; "and"; "or";
+  "print";
+  "length"; "concat"; "substring"; "uppercase"; "lowercase"; "trim";
+  "contains"; "startsWith"; "endsWith"; "replace"; "toFloat";
+]
+
 (* Variables bound by a pattern *)
 let rec pattern_vars = function
   | PVar x -> StringSet.singleton x
@@ -116,24 +125,38 @@ let build_list_tail ctx builder cell =
   let gep = Llvm.build_gep cell_ty cell [| z; Llvm.const_int i32 1 |] "tgep" builder in
   Llvm.build_load p gep "tail" builder
 
-(* Build a closure struct value {fn_ptr, env_ptr} without heap allocation *)
-let build_closure ctx builder fn env_ptr =
+(* Heap-allocate a closure {fn_ptr, env_ptr} and return a ptr to it *)
+let build_closure ctx md builder fn env_ptr =
+  let p = ptr_ty ctx in
   let clos_t = closure_ty ctx in
-  let p = ptr_ty ctx in
+  let gc_malloc = get_gc_malloc ctx md in
+  let gc_malloc_ft = Llvm.function_type p [| Llvm.i64_type ctx |] in
+  let size = Llvm.const_int (Llvm.i64_type ctx) 16 in
+  let clos_ptr = Llvm.build_call gc_malloc_ft gc_malloc [| size |] "clos_p" builder in
+  let i32 = Llvm.i32_type ctx in
+  let z = Llvm.const_int i32 0 in
   let fn_p = Llvm.build_bitcast fn p "fn_p" builder in
-  let c0 = Llvm.build_insertvalue (Llvm.undef clos_t) fn_p 0 "c0" builder in
-  Llvm.build_insertvalue c0 env_ptr 1 "clos" builder
+  let fgep = Llvm.build_gep clos_t clos_ptr [| z; Llvm.const_int i32 0 |] "fgep" builder in
+  ignore (Llvm.build_store fn_p fgep builder);
+  let egep = Llvm.build_gep clos_t clos_ptr [| z; Llvm.const_int i32 1 |] "egep" builder in
+  ignore (Llvm.build_store env_ptr egep builder);
+  clos_ptr
 
-(* Call a closure value: extract fn_ptr and env_ptr, call fn_ptr(arg, env_ptr) *)
-let call_closure ctx builder clos_val arg_val =
-  let f64 = Llvm.double_type ctx in
+(* Call a closure ptr: load {fn_ptr, env_ptr}, call fn_ptr(arg, env_ptr) with given ret_ty *)
+let call_closure ctx builder clos_ptr arg_val ret_ty =
   let p = ptr_ty ctx in
-  let fn_ptr  = Llvm.build_extractvalue clos_val 0 "fn_ptr"  builder in
-  let env_ptr = Llvm.build_extractvalue clos_val 1 "env_ptr" builder in
-  let ft = Llvm.function_type f64 [| f64; p |] in
+  let clos_t = closure_ty ctx in
+  let i32 = Llvm.i32_type ctx in
+  let z = Llvm.const_int i32 0 in
+  let fn_gep  = Llvm.build_gep clos_t clos_ptr [| z; Llvm.const_int i32 0 |] "fn_gep"  builder in
+  let env_gep = Llvm.build_gep clos_t clos_ptr [| z; Llvm.const_int i32 1 |] "env_gep" builder in
+  let fn_ptr  = Llvm.build_load p fn_gep  "fn_ptr"  builder in
+  let env_ptr = Llvm.build_load p env_gep "env_ptr" builder in
+  let arg_ty  = Llvm.type_of arg_val in
+  let ft = Llvm.function_type ret_ty [| arg_ty; p |] in
   Llvm.build_call ft fn_ptr [| arg_val; env_ptr |] "app" builder
 
-(* Wrap a 1-arg f64→f64 named function as a closure *)
+(* Wrap a 1-arg f64→f64 named function as a heap-allocated closure ptr *)
 let wrap_fn_as_closure ctx md builder fn name =
   let f64 = Llvm.double_type ctx in
   let p = ptr_ty ctx in
@@ -150,7 +173,7 @@ let wrap_fn_as_closure ctx md builder fn name =
         ignore (Llvm.build_ret r wb);
         wfn
   in
-  build_closure ctx builder wfn (Llvm.const_null p)
+  build_closure ctx md builder wfn (Llvm.const_null p)
 
 (* ── Static type analysis for pre-pass ─────────────────────────────────────── *)
 
@@ -168,6 +191,19 @@ let rec arg_is_list_in_body arg_name = function
   | Let (_, v) -> arg_is_list_in_body arg_name v
   | _ -> false
 
+(* Check if arg_name appears in direct function-call position, indicating a closure arg *)
+let rec arg_is_closure_in_body arg_name = function
+  | App (Var f, _) when f = arg_name -> true
+  | App (f, a) ->
+      arg_is_closure_in_body arg_name f || arg_is_closure_in_body arg_name a
+  | Match (e, arms) ->
+      arg_is_closure_in_body arg_name e ||
+      List.exists (fun (_, b) -> arg_is_closure_in_body arg_name b) arms
+  | Seq (a, b) -> arg_is_closure_in_body arg_name a || arg_is_closure_in_body arg_name b
+  | Lam (x, body) when x <> arg_name -> arg_is_closure_in_body arg_name body
+  | Let (_, v) -> arg_is_closure_in_body arg_name v
+  | _ -> false
+
 (* Vars introduced as list by a cons pattern's tail binding *)
 let rec cons_tail_vars = function
   | PCons (_, PVar t) -> StringSet.singleton t
@@ -180,6 +216,7 @@ let rec cons_tail_vars = function
    is_list_arg: test if a var name is a list-typed argument. *)
 let rec body_returns_list_v list_fns list_vars is_list_arg = function
   | List _ -> true
+  | Lam _ -> true  (* lambdas are heap-allocated — return ptr *)
   | Var x -> StringSet.mem x list_vars || StringSet.mem x list_fns || is_list_arg x
   | Match (_, arms) ->
       List.exists (fun (pat, body) ->
@@ -248,47 +285,62 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
   | Lam (x, body) ->
       let f64 = Llvm.double_type ctx in
       let p = ptr_ty ctx in
-      let top = Hashtbl.fold (fun n _ s -> StringSet.add n s) known_fns StringSet.empty in
+      let i8 = Llvm.i8_type ctx in
+      let top = Hashtbl.fold (fun n _ s -> StringSet.add n s) known_fns inline_primitives in
       let fv_set = free_vars (StringSet.add x top) body in
       let fv = StringSet.elements fv_set in
+      (* Captured values with their types *)
+      let fv_caps = List.map (fun name ->
+        match StringMap.find_opt name env with
+        | Some v -> (name, v)
+        | None -> failwith (Printf.sprintf "codegen: lambda captures unbound variable '%s'" name)
+      ) fv in
       let lam_name = fresh_lam () in
-      let lft = Llvm.function_type f64 [| f64; p |] in
+      (* Determine arg and return types from static analysis *)
+      let arg_is_ptr = arg_is_list_in_body x body || arg_is_closure_in_body x body in
+      let ret_is_ptr = body_returns_list StringSet.empty body in
+      let arg_ty = if arg_is_ptr then p else f64 in
+      let ret_ty = if ret_is_ptr then p else f64 in
+      let lft = Llvm.function_type ret_ty [| arg_ty; p |] in
       let lam_fn = Llvm.define_function lam_name lft md in
       let lbb = Llvm.entry_block lam_fn in
       let lb  = Llvm.builder_at_end ctx lbb in
       Llvm.set_value_name x (Llvm.params lam_fn).(0);
       let env_param = (Llvm.params lam_fn).(1) in
+      (* Unpack env: byte-level GEP so mixed f64/ptr slots are handled correctly *)
       let lam_env =
-        List.fold_left (fun acc (i, name) ->
-          let idx = Llvm.const_int (Llvm.i64_type ctx) i in
-          let ep  = Llvm.build_gep f64 env_param [| idx |] ("ep_" ^ name) lb in
-          let v   = Llvm.build_load f64 ep name lb in
+        List.fold_left (fun acc (i, (name, cap_val)) ->
+          let slot_ty = Llvm.type_of cap_val in
+          let byte_off = Llvm.const_int (Llvm.i64_type ctx) (i * 8) in
+          let ep = Llvm.build_gep i8 env_param [| byte_off |] ("ep_" ^ name) lb in
+          let v  = Llvm.build_load slot_ty ep name lb in
           StringMap.add name v acc)
         (StringMap.singleton x (Llvm.params lam_fn).(0))
-        (List.mapi (fun i n -> (i, n)) fv)
+        (List.mapi (fun i nc -> (i, nc)) fv_caps)
       in
       let result = compile_expr ctx md lb known_fns lam_env true body in
-      (if Llvm.classify_type (Llvm.type_of result) <> Llvm.TypeKind.Double then
-        failwith "codegen: lambda body must return f64 (list-returning lambdas deferred to #95)");
       ignore (Llvm.build_ret result lb);
+      (* Pack env: byte-level GEP, store each captured value with its actual type *)
       let env_ptr =
         if fv = [] then Llvm.const_null p
         else begin
-          let n    = List.length fv in
+          let n    = List.length fv_caps in
           let size = Llvm.const_int (Llvm.i64_type ctx) (n * 8) in
           let mfn  = get_gc_malloc ctx md in
           let mft  = Llvm.function_type p [| Llvm.i64_type ctx |] in
           let ep   = Llvm.build_call mft mfn [| size |] "env_p" builder in
-          List.iteri (fun i name ->
-            let idx  = Llvm.const_int (Llvm.i64_type ctx) i in
-            let slot = Llvm.build_gep f64 ep [| idx |] ("es_" ^ name) builder in
-            let cap  = StringMap.find name env in
-            ignore (Llvm.build_store cap slot builder))
-          fv;
+          List.iteri (fun i (name, _) ->
+            let cap      = StringMap.find name env in
+            let slot_ty  = Llvm.type_of cap in
+            let byte_off = Llvm.const_int (Llvm.i64_type ctx) (i * 8) in
+            let slot     = Llvm.build_gep i8 ep [| byte_off |] ("es_" ^ name) builder in
+            ignore (Llvm.build_store cap slot builder);
+            ignore slot_ty)  (* slot_ty used via cap *)
+          fv_caps;
           ep
         end
       in
-      build_closure ctx builder lam_fn env_ptr
+      build_closure ctx md builder lam_fn env_ptr
 
   | App (e_fn, e_arg) ->
       let f64 = Llvm.double_type ctx in
@@ -449,16 +501,29 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
                 end else begin
                   let fv = compile_expr ctx md builder known_fns env false e_fn in
                   let av = compile_expr ctx md builder known_fns env false e_arg in
-                  call_closure ctx builder fv av
+                  call_closure ctx builder fv av f64
                 end
             | None ->
-                let fv = compile_expr ctx md builder known_fns env false e_fn in
-                let av = compile_expr ctx md builder known_fns env false e_arg in
-                call_closure ctx builder fv av)
+                (* Unresolved name: simulate curried closure application over all args.
+                   Non-final calls return ptr (intermediate closure); final returns f64. *)
+                let fv = compile_expr ctx md builder known_fns env false (Var name) in
+                let vargs = List.map (compile_expr ctx md builder known_fns env false) args in
+                let n = List.length vargs in
+                snd (List.fold_left (fun (i, clos) av ->
+                  let ret_ty = if i = n - 1 then f64 else p in
+                  (i + 1, call_closure ctx builder clos av ret_ty)
+                ) (0, fv) vargs))
        | None ->
+           (* Non-variable function position: determine return type from e_fn shape *)
            let fv = compile_expr ctx md builder known_fns env false e_fn in
            let av = compile_expr ctx md builder known_fns env false e_arg in
-           call_closure ctx builder fv av)
+           let ret_ty = match e_fn with
+             | Lam (_, lbody) ->
+                 if body_returns_list StringSet.empty lbody then p else f64
+             | App _ -> p  (* intermediate curried call returns a closure *)
+             | _ -> f64
+           in
+           call_closure ctx builder fv av ret_ty)
 
   | List items ->
       let p = ptr_ty ctx in
@@ -673,10 +738,11 @@ let compile_module exprs =
       (Hashtbl.replace list_arg_tbl (fn, i) true; true)
     else false
   in
-  (* Seed: arg directly matched with cons/nil *)
+  (* Seed: arg directly matched with cons/nil, or used in function-call position (closure) *)
   List.iter (fun (name, args, body) ->
     List.iteri (fun i a ->
-      if arg_is_list_in_body a body then ignore (mark name i)) args
+      if arg_is_list_in_body a body || arg_is_closure_in_body a body
+      then ignore (mark name i)) args
   ) fundefs;
   (* Seed: arg appears as cons tail — cons _ arg *)
   List.iter (fun (name, args, body) ->
