@@ -249,6 +249,7 @@ let declare_ext md name ft =
 let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llvalue) Hashtbl.t) env in_tail = function
   | Int n   -> Llvm.const_float (Llvm.double_type ctx) (float_of_int n)
   | Float f -> Llvm.const_float (Llvm.double_type ctx) f
+  | Lng n   -> Llvm.const_float (Llvm.double_type ctx) (Int64.to_float n)
   | Bool b  -> Llvm.const_float (Llvm.double_type ctx) (if b then 1.0 else 0.0)
 
   | Str s ->
