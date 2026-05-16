@@ -50,6 +50,8 @@ let inline_primitives = StringSet.of_list [
   "random"; "toInt";
   "get"; "set"; "has";
   "matchList"; "matchBool";
+  "env"; "envOr";
+  "toString"; "str";
 ]
 
 (* Variables bound by a pattern *)
@@ -429,12 +431,14 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
            let printf_fn = match Llvm.lookup_function "printf" md with
              | Some f -> f
              | None -> Llvm.declare_function "printf" printf_ft md in
-           let fmt_str = "%g\n\x00" in
+           let is_ptr = Llvm.classify_type (Llvm.type_of v) = Llvm.TypeKind.Pointer in
+           let fmt_str = if is_ptr then "%s\n\x00" else "%g\n\x00" in
+           let fmt_key = if is_ptr then ".fmt_s" else ".fmt_g" in
            let fmt_const = Llvm.const_string ctx fmt_str in
-           let fmt_global = match Llvm.lookup_global ".fmt_g" md with
+           let fmt_global = match Llvm.lookup_global fmt_key md with
              | Some g -> g
              | None ->
-                 let g = Llvm.define_global ".fmt_g" fmt_const md in
+                 let g = Llvm.define_global fmt_key fmt_const md in
                  Llvm.set_linkage Llvm.Linkage.Private g;
                  Llvm.set_global_constant true g;
                  g in
@@ -444,6 +448,18 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
              "fmt" builder in
            ignore (Llvm.build_call printf_ft printf_fn [| fmt_ptr; v |] "" builder);
            v
+       (* ── env / envOr ── *)
+       | Some ("env", [name_expr]) ->
+           let nv = compile_expr ctx md builder known_fns env false name_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p |] in
+           Llvm.build_call ft (declare_ext md "churing_env" ft) [| nv |] "env" builder
+       | Some ("envOr", [name_expr; default_expr]) ->
+           let nv = compile_expr ctx md builder known_fns env false name_expr in
+           let dv = compile_expr ctx md builder known_fns env false default_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_env_or" ft) [| nv; dv |] "envOr" builder
        (* ── String operations ── *)
        | Some ("length", [s_expr]) ->
            let sv = compile_expr ctx md builder known_fns env false s_expr in

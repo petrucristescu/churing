@@ -87,6 +87,27 @@ pub unsafe extern "C" fn churing_to_float(s: *const i8) -> f64 {
     cstr(s).parse::<f64>().unwrap_or(0.0)
 }
 
+// ── Random number (LCG) ─────────────────────────────────────────────────────
+use std::cell::Cell;
+thread_local! {
+    static LCG: Cell<u64> = Cell::new(6364136223846793005u64);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn churing_random(_dummy: f64) -> f64 {
+    LCG.with(|s| {
+        let v = s.get().wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s.set(v);
+        (v >> 11) as f64 / (1u64 << 53) as f64
+    })
+}
+
+// ── toInt / str ──────────────────────────────────────────────────────────────
+#[no_mangle]
+pub unsafe extern "C" fn churing_to_int(n: f64) -> f64 {
+    n.trunc()
+}
+
 // ── Dict (association list) ──────────────────────────────────────────────────
 // Each node: { key_ptr:8, value_ptr:8, next_ptr:8 } = 24 bytes
 // Values are always stored as ptr. f64 values are boxed via GC_malloc(8).
@@ -151,5 +172,26 @@ pub unsafe extern "C" fn churing_char_at(s: *const i8, idx: f64) -> *const i8 {
         alloc_str(std::str::from_utf8_unchecked(&bytes[i..i + 1]))
     } else {
         alloc_str("")
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn churing_env(name: *const i8) -> *const i8 {
+    let key = cstr(name);
+    match std::env::var(key) {
+        Ok(v) => alloc_str(&v),
+        Err(_) => {
+            eprintln!("env: variable not set: {}", key);
+            std::process::exit(1);
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn churing_env_or(name: *const i8, default: *const i8) -> *const i8 {
+    let key = cstr(name);
+    match std::env::var(key) {
+        Ok(v) => alloc_str(&v),
+        Err(_) => default,
     }
 }
