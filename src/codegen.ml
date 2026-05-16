@@ -40,6 +40,7 @@ let fresh_lam () =
 
 (* Primitive names handled inline in the App case — not in known_fns or env *)
 let inline_primitives = StringSet.of_list [
+  "if";
   "cons"; "head"; "tail"; "empty";
   "gt"; "lt"; "gte"; "lte"; "not"; "and"; "or";
   "print";
@@ -488,6 +489,26 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
            let p = ptr_ty ctx in
            let ft = Llvm.function_type f64 [| p |] in
            Llvm.build_call ft (declare_ext md "churing_to_float" ft) [| sv |] "tofloat" builder
+       (* ── if cond then_val else_val ── *)
+       | Some ("if", [cond_e; then_e; else_e]) ->
+           let cond_v = compile_expr ctx md builder known_fns env false cond_e in
+           let zero = Llvm.const_float f64 0.0 in
+           let cmp = Llvm.build_fcmp Llvm.Fcmp.One cond_v zero "if_cond" builder in
+           let fn = Llvm.block_parent (Llvm.insertion_block builder) in
+           let then_bb  = Llvm.append_block ctx "if_then"  fn in
+           let else_bb  = Llvm.append_block ctx "if_else"  fn in
+           let merge_bb = Llvm.append_block ctx "if_merge" fn in
+           ignore (Llvm.build_cond_br cmp then_bb else_bb builder);
+           Llvm.position_at_end then_bb builder;
+           let then_v = compile_expr ctx md builder known_fns env in_tail then_e in
+           let then_end = Llvm.insertion_block builder in
+           ignore (Llvm.build_br merge_bb builder);
+           Llvm.position_at_end else_bb builder;
+           let else_v = compile_expr ctx md builder known_fns env in_tail else_e in
+           let else_end = Llvm.insertion_block builder in
+           ignore (Llvm.build_br merge_bb builder);
+           Llvm.position_at_end merge_bb builder;
+           Llvm.build_phi [(then_v, then_end); (else_v, else_end)] "if_r" builder
        (* ── Known function direct call ── *)
        | Some (name, args) ->
            (match Hashtbl.find_opt known_fns name with
