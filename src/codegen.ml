@@ -706,6 +706,9 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
       in
       Llvm.build_call ft fn (Array.of_list vargs) "r" builder
 
+  | Dict _ -> failwith "codegen: Dict literals not yet supported in native compile (requires polymorphic value representation)"
+  | Try  _ -> failwith "codegen: try/catch not yet supported in native compile"
+  | Import _ -> Llvm.const_float (Llvm.double_type ctx) 0.0  (* resolved before codegen *)
   | e -> failwith ("codegen: unsupported expression: " ^ string_of_expr e)
 
 (* Compile a named function body into its pre-declared (or freshly declared) LLVM function.
