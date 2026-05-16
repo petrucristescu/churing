@@ -52,6 +52,7 @@ let inline_primitives = StringSet.of_list [
   "matchList"; "matchBool";
   "env"; "envOr";
   "toString"; "str";
+  "readFile"; "writeFile"; "appendFile"; "fileExists"; "deleteFile";
 ]
 
 (* Variables bound by a pattern *)
@@ -460,6 +461,34 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
            let p = ptr_ty ctx in
            let ft = Llvm.function_type p [| p; p |] in
            Llvm.build_call ft (declare_ext md "churing_env_or" ft) [| nv; dv |] "envOr" builder
+       (* ── File I/O ── *)
+       | Some ("readFile", [path_e]) ->
+           let pv = compile_expr ctx md builder known_fns env false path_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p |] in
+           Llvm.build_call ft (declare_ext md "churing_read_file" ft) [| pv |] "rfile" builder
+       | Some ("writeFile", [path_e; content_e]) ->
+           let pv = compile_expr ctx md builder known_fns env false path_e in
+           let cv = compile_expr ctx md builder known_fns env false content_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_write_file" ft) [| pv; cv |] "wfile" builder
+       | Some ("appendFile", [path_e; content_e]) ->
+           let pv = compile_expr ctx md builder known_fns env false path_e in
+           let cv = compile_expr ctx md builder known_fns env false content_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_append_file" ft) [| pv; cv |] "afile" builder
+       | Some ("fileExists", [path_e]) ->
+           let pv = compile_expr ctx md builder known_fns env false path_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p |] in
+           Llvm.build_call ft (declare_ext md "churing_file_exists" ft) [| pv |] "fexists" builder
+       | Some ("deleteFile", [path_e]) ->
+           let pv = compile_expr ctx md builder known_fns env false path_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p |] in
+           Llvm.build_call ft (declare_ext md "churing_delete_file" ft) [| pv |] "delfile" builder
        (* ── String operations ── *)
        | Some ("length", [s_expr]) ->
            let sv = compile_expr ctx md builder known_fns env false s_expr in
@@ -776,16 +805,12 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
        | [] -> failwith "codegen: match with no reachable arms"
        | results -> Llvm.build_phi results "match_r" builder)
 
-  | Seq (Let (name, ve), rest) ->
-      let v = compile_expr ctx md builder known_fns env false ve in
-      compile_expr ctx md builder known_fns (StringMap.add name v env) in_tail rest
-  | Seq (FunDef (name, args, body), rest) ->
-      (* Nested function definition — compile it and add to known_fns for the rest *)
-      ignore (compile_fundef ctx md known_fns name args body);
-      compile_expr ctx md builder known_fns env in_tail rest
+  (* Seq: parse_seq builds left-folded trees Seq(Seq(Seq(e1,e2),e3),e4).
+     Flatten via compile_seq_for_env so Let/FunDef bindings thread through env
+     regardless of whether the tree is left- or right-nested. *)
   | Seq (a, b) ->
-      ignore (compile_expr ctx md builder known_fns env false a);
-      compile_expr ctx md builder known_fns env in_tail b
+      let env' = compile_seq_for_env ctx md builder known_fns env a in
+      compile_expr ctx md builder known_fns env' in_tail b
   | Let (_, ve) ->
       compile_expr ctx md builder known_fns env in_tail ve
 
@@ -867,6 +892,22 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
   | Try  _ -> failwith "codegen: try/catch not yet supported in native compile"
   | Import _ -> Llvm.const_float (Llvm.double_type ctx) 0.0  (* resolved before codegen *)
   | e -> failwith ("codegen: unsupported expression: " ^ string_of_expr e)
+
+(* Process a sub-expression for its side effects and Let/FunDef bindings.
+   Returns updated env. Used by the Seq case to handle left-folded parse trees. *)
+and compile_seq_for_env ctx md builder known_fns env = function
+  | Let (name, ve) ->
+      let v = compile_expr ctx md builder known_fns env false ve in
+      StringMap.add name v env
+  | FunDef (name, args, body) ->
+      ignore (compile_fundef ctx md known_fns name args body);
+      env
+  | Seq (a, b) ->
+      let env' = compile_seq_for_env ctx md builder known_fns env a in
+      compile_seq_for_env ctx md builder known_fns env' b
+  | e ->
+      ignore (compile_expr ctx md builder known_fns env false e);
+      env
 
 (* Compile a named function body into its pre-declared (or freshly declared) LLVM function.
    When called from compile_module, the function is already in known_fns (from the pre-pass)

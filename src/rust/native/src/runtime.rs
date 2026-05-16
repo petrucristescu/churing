@@ -195,3 +195,46 @@ pub unsafe extern "C" fn churing_env_or(name: *const i8, default: *const i8) -> 
         Err(_) => default,
     }
 }
+
+// ── File I/O ─────────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub unsafe extern "C" fn churing_read_file(path: *const i8) -> *const i8 {
+    match std::fs::read_to_string(cstr(path)) {
+        Ok(s) => alloc_str(&s),
+        Err(e) => {
+            eprintln!("readFile: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn churing_write_file(path: *const i8, content: *const i8) -> f64 {
+    match std::fs::write(cstr(path), cstr(content).as_bytes()) {
+        Ok(_) => 1.0,
+        Err(e) => { eprintln!("writeFile: {}", e); std::process::exit(1); }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn churing_append_file(path: *const i8, content: *const i8) -> f64 {
+    use std::io::Write;
+    match std::fs::OpenOptions::new().append(true).create(true).open(cstr(path)) {
+        Ok(mut f) => { let _ = f.write_all(cstr(content).as_bytes()); 1.0 }
+        Err(e) => { eprintln!("appendFile: {}", e); std::process::exit(1); }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn churing_file_exists(path: *const i8) -> f64 {
+    if std::path::Path::new(cstr(path)).exists() { 1.0 } else { 0.0 }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn churing_delete_file(path: *const i8) -> f64 {
+    match std::fs::remove_file(cstr(path)) {
+        Ok(_) => 1.0,
+        Err(e) => { eprintln!("deleteFile: {}", e); std::process::exit(1); }
+    }
+}
