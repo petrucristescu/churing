@@ -87,6 +87,54 @@ pub unsafe extern "C" fn churing_to_float(s: *const i8) -> f64 {
     cstr(s).parse::<f64>().unwrap_or(0.0)
 }
 
+// ── Dict (association list) ──────────────────────────────────────────────────
+// Each node: { key_ptr:8, value_ptr:8, next_ptr:8 } = 24 bytes
+// Values are always stored as ptr. f64 values are boxed via GC_malloc(8).
+// Null ptr = empty dict.
+
+#[no_mangle]
+pub unsafe extern "C" fn churing_dict_set(dict: *mut u8, key: *const i8, val: *const u8) -> *mut u8 {
+    let node = GC_malloc(24);
+    *(node as *mut *const i8) = key;
+    *(node.add(8) as *mut *const u8) = val;
+    *(node.add(16) as *mut *mut u8) = dict;
+    node
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn churing_dict_get(dict: *mut u8, key: *const i8) -> *const u8 {
+    let key_str = cstr(key);
+    let mut cur = dict;
+    while !cur.is_null() {
+        let node_key = cstr(*(cur as *const *const i8));
+        if node_key == key_str {
+            return *(cur.add(8) as *const *const u8);
+        }
+        cur = *(cur.add(16) as *const *mut u8);
+    }
+    std::ptr::null()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn churing_dict_has(dict: *mut u8, key: *const i8) -> f64 {
+    let key_str = cstr(key);
+    let mut cur = dict;
+    while !cur.is_null() {
+        let node_key = cstr(*(cur as *const *const i8));
+        if node_key == key_str { return 1.0; }
+        cur = *(cur.add(16) as *const *mut u8);
+    }
+    0.0
+}
+
+// Box a f64 so it can be stored as a dict value (ptr)
+#[no_mangle]
+pub unsafe extern "C" fn churing_box_f64(val: f64) -> *const u8 {
+    let p = GC_malloc(8);
+    *(p as *mut f64) = val;
+    p
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn churing_index_of(s: *const i8, sub: *const i8) -> f64 {
     match cstr(s).find(cstr(sub)) {

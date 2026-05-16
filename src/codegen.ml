@@ -47,6 +47,7 @@ let inline_primitives = StringSet.of_list [
   "length"; "concat"; "substring"; "uppercase"; "lowercase"; "trim";
   "contains"; "startsWith"; "endsWith"; "replace"; "toFloat";
   "indexOf"; "charAt";
+  "get"; "set"; "has";
 ]
 
 (* Variables bound by a pattern *)
@@ -241,6 +242,14 @@ let declare_ext md name ft =
   | Some f -> f
   | None -> Llvm.declare_function name ft md
 
+(* Auto-unbox a dict value: if v is ptr (boxed f64), load the double.
+   Used in arithmetic operators so dict-get results work transparently. *)
+let auto_unbox_f64 ctx builder v =
+  match Llvm.classify_type (Llvm.type_of v) with
+  | Llvm.TypeKind.Pointer ->
+      Llvm.build_load (Llvm.double_type ctx) v "unbox" builder
+  | _ -> v
+
 (* ── Main expression compiler ───────────────────────────────────────────────── *)
 (* known_fns: name → (function_type, function_value)
    Storing ft explicitly avoids relying on Llvm.type_of which may return ptr in LLVM 18.
@@ -365,22 +374,22 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
            let null_ptr = Llvm.const_null p in
            let cond = Llvm.build_icmp Llvm.Icmp.Eq lst null_ptr "is_empty" builder in
            Llvm.build_uitofp cond f64 "emptyf" builder
-       (* ── Comparison ops ── *)
+       (* ── Comparison ops (auto-unbox boxed f64 from dict get) ── *)
        | Some ("gt",  [a; b]) ->
-           let av = compile_expr ctx md builder known_fns env false a in
-           let bv = compile_expr ctx md builder known_fns env false b in
+           let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+           let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
            Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Ogt av bv "gt" builder) f64 "gtf" builder
        | Some ("lt",  [a; b]) ->
-           let av = compile_expr ctx md builder known_fns env false a in
-           let bv = compile_expr ctx md builder known_fns env false b in
+           let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+           let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
            Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Olt av bv "lt" builder) f64 "ltf" builder
        | Some ("gte", [a; b]) ->
-           let av = compile_expr ctx md builder known_fns env false a in
-           let bv = compile_expr ctx md builder known_fns env false b in
+           let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+           let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
            Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Oge av bv "gte" builder) f64 "gtef" builder
        | Some ("lte", [a; b]) ->
-           let av = compile_expr ctx md builder known_fns env false a in
-           let bv = compile_expr ctx md builder known_fns env false b in
+           let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+           let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
            Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Ole av bv "lte" builder) f64 "ltef" builder
        | Some ("not", [x]) ->
            let xv = compile_expr ctx md builder known_fns env false x in
@@ -491,6 +500,34 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
            let p = ptr_ty ctx in
            let ft = Llvm.function_type f64 [| p |] in
            Llvm.build_call ft (declare_ext md "churing_to_float" ft) [| sv |] "tofloat" builder
+       (* ── Dict operations ── *)
+       | Some ("get", [dict_e; key_e]) ->
+           let dv = compile_expr ctx md builder known_fns env false dict_e in
+           let kv = compile_expr ctx md builder known_fns env false key_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_dict_get" ft) [| dv; kv |] "dget" builder
+       | Some ("set", [dict_e; key_e; val_e]) ->
+           let dv  = compile_expr ctx md builder known_fns env false dict_e in
+           let kv  = compile_expr ctx md builder known_fns env false key_e in
+           let raw = compile_expr ctx md builder known_fns env false val_e in
+           let p   = ptr_ty ctx in
+           let f64 = Llvm.double_type ctx in
+           let box_ft = Llvm.function_type p [| f64 |] in
+           let val_v =
+             match Llvm.classify_type (Llvm.type_of raw) with
+             | Llvm.TypeKind.Double ->
+                 Llvm.build_call box_ft (declare_ext md "churing_box_f64" box_ft) [| raw |] "boxed" builder
+             | _ -> raw
+           in
+           let set_ft = Llvm.function_type p [| p; p; p |] in
+           Llvm.build_call set_ft (declare_ext md "churing_dict_set" set_ft) [| dv; kv; val_v |] "dset" builder
+       | Some ("has", [dict_e; key_e]) ->
+           let dv = compile_expr ctx md builder known_fns env false dict_e in
+           let kv = compile_expr ctx md builder known_fns env false key_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_dict_has" ft) [| dv; kv |] "dhas" builder
        | Some ("indexOf", [s_expr; sub_expr]) ->
            let sv  = compile_expr ctx md builder known_fns env false s_expr in
            let sub = compile_expr ctx md builder known_fns env false sub_expr in
@@ -659,41 +696,47 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
       compile_expr ctx md builder known_fns env in_tail ve
 
   | Add (a, b) ->
-      Llvm.build_fadd
-        (compile_expr ctx md builder known_fns env false a)
-        (compile_expr ctx md builder known_fns env false b)
-        "add" builder
+      let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+      let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
+      Llvm.build_fadd av bv "add" builder
   | Sub (a, b) ->
-      Llvm.build_fsub
-        (compile_expr ctx md builder known_fns env false a)
-        (compile_expr ctx md builder known_fns env false b)
-        "sub" builder
+      let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+      let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
+      Llvm.build_fsub av bv "sub" builder
   | Mul (a, b) ->
-      Llvm.build_fmul
-        (compile_expr ctx md builder known_fns env false a)
-        (compile_expr ctx md builder known_fns env false b)
-        "mul" builder
+      let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+      let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
+      Llvm.build_fmul av bv "mul" builder
   | Div (a, b) ->
-      Llvm.build_fdiv
-        (compile_expr ctx md builder known_fns env false a)
-        (compile_expr ctx md builder known_fns env false b)
-        "div" builder
+      let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+      let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
+      Llvm.build_fdiv av bv "div" builder
   | Eq (a, b) ->
       let f64 = Llvm.double_type ctx in
       let p = ptr_ty ctx in
       let av = compile_expr ctx md builder known_fns env false a in
       let bv = compile_expr ctx md builder known_fns env false b in
-      (match Llvm.classify_type (Llvm.type_of av) with
-       | Llvm.TypeKind.Pointer ->
+      (* Mixed ptr/f64: one is a boxed double from a dict get, unbox before comparing *)
+      let av_is_ptr = Llvm.classify_type (Llvm.type_of av) = Llvm.TypeKind.Pointer in
+      let bv_is_ptr = Llvm.classify_type (Llvm.type_of bv) = Llvm.TypeKind.Pointer in
+      (match av_is_ptr, bv_is_ptr with
+       | true, true ->
+           (* Both ptr: string comparison *)
            let strcmp_ft = Llvm.function_type (Llvm.i32_type ctx) [| p; p |] in
            let strcmp_fn = declare_ext md "strcmp" strcmp_ft in
            let cmp = Llvm.build_call strcmp_ft strcmp_fn [| av; bv |] "scmp" builder in
            let z = Llvm.const_int (Llvm.i32_type ctx) 0 in
            Llvm.build_uitofp (Llvm.build_icmp Llvm.Icmp.Eq cmp z "seq" builder) f64 "seqf" builder
-       | _ ->
-           Llvm.build_uitofp
-             (Llvm.build_fcmp Llvm.Fcmp.Oeq av bv "eq" builder)
-             f64 "eqf" builder)
+       | true, false ->
+           (* av is boxed double, bv is f64 *)
+           let av_f = Llvm.build_load f64 av "unbox" builder in
+           Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Oeq av_f bv "eq" builder) f64 "eqf" builder
+       | false, true ->
+           (* av is f64, bv is boxed double *)
+           let bv_f = Llvm.build_load f64 bv "unbox" builder in
+           Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Oeq av bv_f "eq" builder) f64 "eqf" builder
+       | false, false ->
+           Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Oeq av bv "eq" builder) f64 "eqf" builder)
 
   | Llvm (intrinsic, args) ->
       let f64 = Llvm.double_type ctx in
@@ -706,7 +749,27 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
       in
       Llvm.build_call ft fn (Array.of_list vargs) "r" builder
 
-  | Dict _ -> failwith "codegen: Dict literals not yet supported in native compile (requires polymorphic value representation)"
+  | Dict entries ->
+      (* Alist: each entry = 24-byte node {key_ptr, value_ptr, next_ptr}.
+         f64 values are boxed via churing_box_f64 so all values are stored as ptr. *)
+      let p = ptr_ty ctx in
+      let f64 = Llvm.double_type ctx in
+      let set_ft = Llvm.function_type p [| p; p; p |] in
+      let set_fn = declare_ext md "churing_dict_set" set_ft in
+      let box_ft = Llvm.function_type p [| f64 |] in
+      let box_fn = declare_ext md "churing_box_f64" box_ft in
+      let null_p = Llvm.const_null p in
+      List.fold_left (fun acc_dict (key_str, val_e) ->
+        let key_v = compile_expr ctx md builder known_fns env false (Str key_str) in
+        let raw   = compile_expr ctx md builder known_fns env false val_e in
+        let val_v =
+          match Llvm.classify_type (Llvm.type_of raw) with
+          | Llvm.TypeKind.Double ->
+              Llvm.build_call box_ft box_fn [| raw |] "boxed" builder
+          | _ -> raw
+        in
+        Llvm.build_call set_ft set_fn [| acc_dict; key_v; val_v |] "dict" builder
+      ) null_p entries
   | Try  _ -> failwith "codegen: try/catch not yet supported in native compile"
   | Import _ -> Llvm.const_float (Llvm.double_type ctx) 0.0  (* resolved before codegen *)
   | e -> failwith ("codegen: unsupported expression: " ^ string_of_expr e)
