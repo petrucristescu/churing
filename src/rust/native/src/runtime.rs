@@ -86,3 +86,22 @@ pub unsafe extern "C" fn churing_to_string(n: f64) -> *const i8 {
 pub unsafe extern "C" fn churing_to_float(s: *const i8) -> f64 {
     cstr(s).parse::<f64>().unwrap_or(0.0)
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn churing_index_of(s: *const i8, sub: *const i8) -> f64 {
+    match cstr(s).find(cstr(sub)) {
+        Some(idx) => idx as f64,
+        None => -1.0,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn churing_char_at(s: *const i8, idx: f64) -> *const i8 {
+    let bytes = cstr(s).as_bytes();
+    let i = idx as usize;
+    if i < bytes.len() {
+        alloc_str(std::str::from_utf8_unchecked(&bytes[i..i + 1]))
+    } else {
+        alloc_str("")
+    }
+}

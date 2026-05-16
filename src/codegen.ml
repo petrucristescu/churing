@@ -46,6 +46,7 @@ let inline_primitives = StringSet.of_list [
   "print";
   "length"; "concat"; "substring"; "uppercase"; "lowercase"; "trim";
   "contains"; "startsWith"; "endsWith"; "replace"; "toFloat";
+  "indexOf"; "charAt";
 ]
 
 (* Variables bound by a pattern *)
@@ -489,6 +490,18 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
            let p = ptr_ty ctx in
            let ft = Llvm.function_type f64 [| p |] in
            Llvm.build_call ft (declare_ext md "churing_to_float" ft) [| sv |] "tofloat" builder
+       | Some ("indexOf", [s_expr; sub_expr]) ->
+           let sv  = compile_expr ctx md builder known_fns env false s_expr in
+           let sub = compile_expr ctx md builder known_fns env false sub_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_index_of" ft) [| sv; sub |] "indexof" builder
+       | Some ("charAt", [s_expr; idx_expr]) ->
+           let sv  = compile_expr ctx md builder known_fns env false s_expr in
+           let iv  = compile_expr ctx md builder known_fns env false idx_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p; f64 |] in
+           Llvm.build_call ft (declare_ext md "churing_char_at" ft) [| sv; iv |] "charat" builder
        (* ── if cond then_val else_val ── *)
        | Some ("if", [cond_e; then_e; else_e]) ->
            let cond_v = compile_expr ctx md builder known_fns env false cond_e in
