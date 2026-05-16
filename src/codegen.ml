@@ -47,7 +47,9 @@ let inline_primitives = StringSet.of_list [
   "length"; "concat"; "substring"; "uppercase"; "lowercase"; "trim";
   "contains"; "startsWith"; "endsWith"; "replace"; "toFloat";
   "indexOf"; "charAt";
+  "random"; "toInt";
   "get"; "set"; "has";
+  "matchList"; "matchBool";
 ]
 
 (* Variables bound by a pattern *)
@@ -189,7 +191,17 @@ let rec arg_is_list_in_body arg_name = function
       arg_is_list_in_body arg_name e ||
       List.exists (fun (_, b) -> arg_is_list_in_body arg_name b) arms
   | Seq (a, b) -> arg_is_list_in_body arg_name a || arg_is_list_in_body arg_name b
-  | App (f, a) -> arg_is_list_in_body arg_name f || arg_is_list_in_body arg_name a
+  | App _ as full_app ->
+      (* matchList arg ... ⟹ arg is a list *)
+      (match flatten_app [] full_app with
+       | Some ("matchList", Var x :: _) when x = arg_name -> true
+       | Some (_, args) ->
+           List.exists (arg_is_list_in_body arg_name) args
+       | None ->
+           (match full_app with
+            | App (f, a) ->
+                arg_is_list_in_body arg_name f || arg_is_list_in_body arg_name a
+            | _ -> false))
   | Lam (x, body) when x <> arg_name -> arg_is_list_in_body arg_name body
   | Let (_, v) -> arg_is_list_in_body arg_name v
   | _ -> false
@@ -229,6 +241,7 @@ let rec body_returns_list_v list_fns list_vars is_list_arg = function
   | App (f, _) ->
       (match flatten_app [] f with
        | Some ("cons", _) -> true
+       | Some ("matchList", _) -> true
        | Some (name, _) -> StringSet.mem name list_fns
        | None -> false)
   | _ -> false
@@ -495,6 +508,14 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
            let p = ptr_ty ctx in
            let ft = Llvm.function_type p [| f64 |] in
            Llvm.build_call ft (declare_ext md "churing_to_string" ft) [| nv |] "tostr" builder
+       | Some ("random", [arg_e]) ->
+           let av = compile_expr ctx md builder known_fns env false arg_e in
+           let ft = Llvm.function_type f64 [| f64 |] in
+           Llvm.build_call ft (declare_ext md "churing_random" ft) [| av |] "rnd" builder
+       | Some ("toInt", [arg_e]) ->
+           let av = compile_expr ctx md builder known_fns env false arg_e in
+           let ft = Llvm.function_type f64 [| f64 |] in
+           Llvm.build_call ft (declare_ext md "churing_to_int" ft) [| av |] "toint" builder
        | Some ("toFloat", [s_expr]) ->
            let sv = compile_expr ctx md builder known_fns env false s_expr in
            let p = ptr_ty ctx in
@@ -540,6 +561,59 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
            let p = ptr_ty ctx in
            let ft = Llvm.function_type p [| p; f64 |] in
            Llvm.build_call ft (declare_ext md "churing_char_at" ft) [| sv; iv |] "charat" builder
+       (* ── matchBool: lazy if-then-else (Scott-encoded boolean) ── *)
+       | Some ("matchBool", [cond_e; then_e; else_e]) ->
+           let cond_v = compile_expr ctx md builder known_fns env false cond_e in
+           let cond_v = auto_unbox_f64 ctx builder cond_v in
+           let zero = Llvm.const_float f64 0.0 in
+           let cmp = Llvm.build_fcmp Llvm.Fcmp.One cond_v zero "mb_cond" builder in
+           let fn = Llvm.block_parent (Llvm.insertion_block builder) in
+           let then_bb  = Llvm.append_block ctx "mb_then"  fn in
+           let else_bb  = Llvm.append_block ctx "mb_else"  fn in
+           let merge_bb = Llvm.append_block ctx "mb_merge" fn in
+           ignore (Llvm.build_cond_br cmp then_bb else_bb builder);
+           Llvm.position_at_end then_bb builder;
+           let then_v = compile_expr ctx md builder known_fns env in_tail then_e in
+           let then_end = Llvm.insertion_block builder in
+           ignore (Llvm.build_br merge_bb builder);
+           Llvm.position_at_end else_bb builder;
+           let else_v = compile_expr ctx md builder known_fns env in_tail else_e in
+           let else_end = Llvm.insertion_block builder in
+           ignore (Llvm.build_br merge_bb builder);
+           Llvm.position_at_end merge_bb builder;
+           Llvm.build_phi [(then_v, then_end); (else_v, else_end)] "mb_r" builder
+       (* ── matchList: pattern match on list (Church-style eliminator) ── *)
+       | Some ("matchList", [lst_e; nil_fn_e; cons_fn_e]) ->
+           let lst_v    = compile_expr ctx md builder known_fns env false lst_e in
+           let nil_fn_v = compile_expr ctx md builder known_fns env false nil_fn_e in
+           let cons_fn_v= compile_expr ctx md builder known_fns env false cons_fn_e in
+           (* Return type: infer from nil_fn body (e.g. Lam("_", List[]) → ptr) *)
+           let ret_is_ptr = match nil_fn_e with
+             | Lam (_, body) -> body_returns_list StringSet.empty body
+             | _ -> false
+           in
+           let ret_ty = if ret_is_ptr then p else f64 in
+           let fn = Llvm.block_parent (Llvm.insertion_block builder) in
+           let nil_bb  = Llvm.append_block ctx "ml_nil"  fn in
+           let cons_bb = Llvm.append_block ctx "ml_cons" fn in
+           let end_bb  = Llvm.append_block ctx "ml_end"  fn in
+           let null_ptr = Llvm.const_null p in
+           let is_nil = Llvm.build_icmp Llvm.Icmp.Eq lst_v null_ptr "is_nil" builder in
+           ignore (Llvm.build_cond_br is_nil nil_bb cons_bb builder);
+           Llvm.position_at_end nil_bb builder;
+           let dummy = Llvm.const_float f64 0.0 in
+           let nil_result = call_closure ctx builder nil_fn_v dummy ret_ty in
+           let nil_pred = Llvm.insertion_block builder in
+           ignore (Llvm.build_br end_bb builder);
+           Llvm.position_at_end cons_bb builder;
+           let head_v = build_list_head ctx builder lst_v in
+           let tail_v = build_list_tail ctx builder lst_v in
+           let partial = call_closure ctx builder cons_fn_v head_v p in
+           let cons_result = call_closure ctx builder partial tail_v ret_ty in
+           let cons_pred = Llvm.insertion_block builder in
+           ignore (Llvm.build_br end_bb builder);
+           Llvm.position_at_end end_bb builder;
+           Llvm.build_phi [(nil_result, nil_pred); (cons_result, cons_pred)] "ml_r" builder
        (* ── if cond then_val else_val ── *)
        | Some ("if", [cond_e; then_e; else_e]) ->
            let cond_v = compile_expr ctx md builder known_fns env false cond_e in
@@ -689,6 +763,10 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
   | Seq (Let (name, ve), rest) ->
       let v = compile_expr ctx md builder known_fns env false ve in
       compile_expr ctx md builder known_fns (StringMap.add name v env) in_tail rest
+  | Seq (FunDef (name, args, body), rest) ->
+      (* Nested function definition — compile it and add to known_fns for the rest *)
+      ignore (compile_fundef ctx md known_fns name args body);
+      compile_expr ctx md builder known_fns env in_tail rest
   | Seq (a, b) ->
       ignore (compile_expr ctx md builder known_fns env false a);
       compile_expr ctx md builder known_fns env in_tail b
@@ -777,8 +855,9 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
 (* Compile a named function body into its pre-declared (or freshly declared) LLVM function.
    When called from compile_module, the function is already in known_fns (from the pre-pass)
    and has a mangled LLVM name to prevent libc symbol conflicts.
-   When called from the JIT path, known_fns is empty and we define a fresh function. *)
-let compile_fundef ctx md known_fns name args body =
+   When called from the JIT path, known_fns is empty and we define a fresh function.
+   Mutually recursive with compile_expr (nested ~defs inside function bodies). *)
+and compile_fundef ctx md known_fns name args body =
   let f64 = Llvm.double_type ctx in
   let p = ptr_ty ctx in
   let fn, ft = match Hashtbl.find_opt known_fns name with
@@ -1000,7 +1079,17 @@ let find_runtime_lib () =
 
 let compile_to_binary ?(output="a.out") exprs =
   ensure_initialized ();
-  let stdlib = load_stdlib_fundefs "math.ch" @ load_stdlib_fundefs "prelude.ch" in
+  let stdlib =
+    load_stdlib_fundefs "math.ch"       @
+    load_stdlib_fundefs "prelude.ch"    @
+    load_stdlib_fundefs "operators.ch"  @
+    load_stdlib_fundefs "list.ch"       @
+    load_stdlib_fundefs "vector.ch"     @
+    load_stdlib_fundefs "matrix.ch"     @
+    load_stdlib_fundefs "activations.ch" @
+    load_stdlib_fundefs "loss.ch"       @
+    load_stdlib_fundefs "nn.ch"
+  in
   let all_exprs = stdlib @ exprs in
   let (ctx, md, known_fns) = compile_module all_exprs in
   let non_fundefs = List.filter (function FunDef _ -> false | _ -> true) exprs in
