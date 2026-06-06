@@ -263,6 +263,11 @@ and parse_var_def tokens =
   | (At, line, col) :: (Ident name, _, _) :: rest ->
       let value, rest' = parse_add rest in
       (Let (name, value), rest')
+  | (At, _, _) :: (Underscore, _, _) :: rest ->
+      (* @_ value — discard binding (run for side effects). Without this case the
+         leading @ token is never consumed and the top-level loop recurses forever. *)
+      let value, rest' = parse_add rest in
+      (Let ("_", value), rest')
   | _ -> parse_add tokens
 
 and parse_add tokens =

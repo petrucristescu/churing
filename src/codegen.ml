@@ -38,6 +38,23 @@ let fresh_lam () =
   incr lam_counter;
   Printf.sprintf "_lam_%d" n
 
+(* Primitive names handled inline in the App case — not in known_fns or env *)
+let inline_primitives = StringSet.of_list [
+  "if";
+  "cons"; "head"; "tail"; "empty";
+  "gt"; "lt"; "gte"; "lte"; "not"; "and"; "or";
+  "print";
+  "length"; "concat"; "substring"; "uppercase"; "lowercase"; "trim";
+  "contains"; "startsWith"; "endsWith"; "replace"; "toFloat";
+  "indexOf"; "charAt";
+  "random"; "toInt";
+  "get"; "set"; "has";
+  "matchList"; "matchBool";
+  "env"; "envOr";
+  "toString"; "str";
+  "readFile"; "writeFile"; "appendFile"; "fileExists"; "deleteFile";
+]
+
 (* Variables bound by a pattern *)
 let rec pattern_vars = function
   | PVar x -> StringSet.singleton x
@@ -69,7 +86,16 @@ let rec free_vars bound = function
         let bound' = StringSet.union bound (pattern_vars pat) in
         StringSet.union s (free_vars bound' body))
       fv_e arms
-  | _ -> StringSet.empty
+  | Assert e -> free_vars bound e
+  | Dict entries ->
+      List.fold_left (fun s (_, v) -> StringSet.union s (free_vars bound v))
+        StringSet.empty entries
+  | Try (e, h) -> StringSet.union (free_vars bound e) (free_vars bound h)
+  | FunDef (name, args, body) ->
+      let bound' = List.fold_left (fun s a -> StringSet.add a s)
+        (StringSet.add name bound) args in
+      free_vars bound' body
+  | Import _ -> StringSet.empty
 
 (* Flatten App(App(Var f, a1), a2) → Some (f, [a1; a2]) *)
 let rec flatten_app acc = function
@@ -116,24 +142,38 @@ let build_list_tail ctx builder cell =
   let gep = Llvm.build_gep cell_ty cell [| z; Llvm.const_int i32 1 |] "tgep" builder in
   Llvm.build_load p gep "tail" builder
 
-(* Build a closure struct value {fn_ptr, env_ptr} without heap allocation *)
-let build_closure ctx builder fn env_ptr =
+(* Heap-allocate a closure {fn_ptr, env_ptr} and return a ptr to it *)
+let build_closure ctx md builder fn env_ptr =
+  let p = ptr_ty ctx in
   let clos_t = closure_ty ctx in
-  let p = ptr_ty ctx in
+  let gc_malloc = get_gc_malloc ctx md in
+  let gc_malloc_ft = Llvm.function_type p [| Llvm.i64_type ctx |] in
+  let size = Llvm.const_int (Llvm.i64_type ctx) 16 in
+  let clos_ptr = Llvm.build_call gc_malloc_ft gc_malloc [| size |] "clos_p" builder in
+  let i32 = Llvm.i32_type ctx in
+  let z = Llvm.const_int i32 0 in
   let fn_p = Llvm.build_bitcast fn p "fn_p" builder in
-  let c0 = Llvm.build_insertvalue (Llvm.undef clos_t) fn_p 0 "c0" builder in
-  Llvm.build_insertvalue c0 env_ptr 1 "clos" builder
+  let fgep = Llvm.build_gep clos_t clos_ptr [| z; Llvm.const_int i32 0 |] "fgep" builder in
+  ignore (Llvm.build_store fn_p fgep builder);
+  let egep = Llvm.build_gep clos_t clos_ptr [| z; Llvm.const_int i32 1 |] "egep" builder in
+  ignore (Llvm.build_store env_ptr egep builder);
+  clos_ptr
 
-(* Call a closure value: extract fn_ptr and env_ptr, call fn_ptr(arg, env_ptr) *)
-let call_closure ctx builder clos_val arg_val =
-  let f64 = Llvm.double_type ctx in
+(* Call a closure ptr: load {fn_ptr, env_ptr}, call fn_ptr(arg, env_ptr) with given ret_ty *)
+let call_closure ctx builder clos_ptr arg_val ret_ty =
   let p = ptr_ty ctx in
-  let fn_ptr  = Llvm.build_extractvalue clos_val 0 "fn_ptr"  builder in
-  let env_ptr = Llvm.build_extractvalue clos_val 1 "env_ptr" builder in
-  let ft = Llvm.function_type f64 [| f64; p |] in
+  let clos_t = closure_ty ctx in
+  let i32 = Llvm.i32_type ctx in
+  let z = Llvm.const_int i32 0 in
+  let fn_gep  = Llvm.build_gep clos_t clos_ptr [| z; Llvm.const_int i32 0 |] "fn_gep"  builder in
+  let env_gep = Llvm.build_gep clos_t clos_ptr [| z; Llvm.const_int i32 1 |] "env_gep" builder in
+  let fn_ptr  = Llvm.build_load p fn_gep  "fn_ptr"  builder in
+  let env_ptr = Llvm.build_load p env_gep "env_ptr" builder in
+  let arg_ty  = Llvm.type_of arg_val in
+  let ft = Llvm.function_type ret_ty [| arg_ty; p |] in
   Llvm.build_call ft fn_ptr [| arg_val; env_ptr |] "app" builder
 
-(* Wrap a 1-arg f64→f64 named function as a closure *)
+(* Wrap a 1-arg f64→f64 named function as a heap-allocated closure ptr *)
 let wrap_fn_as_closure ctx md builder fn name =
   let f64 = Llvm.double_type ctx in
   let p = ptr_ty ctx in
@@ -150,7 +190,7 @@ let wrap_fn_as_closure ctx md builder fn name =
         ignore (Llvm.build_ret r wb);
         wfn
   in
-  build_closure ctx builder wfn (Llvm.const_null p)
+  build_closure ctx md builder wfn (Llvm.const_null p)
 
 (* ── Static type analysis for pre-pass ─────────────────────────────────────── *)
 
@@ -163,9 +203,33 @@ let rec arg_is_list_in_body arg_name = function
       arg_is_list_in_body arg_name e ||
       List.exists (fun (_, b) -> arg_is_list_in_body arg_name b) arms
   | Seq (a, b) -> arg_is_list_in_body arg_name a || arg_is_list_in_body arg_name b
-  | App (f, a) -> arg_is_list_in_body arg_name f || arg_is_list_in_body arg_name a
+  | App _ as full_app ->
+      (* matchList arg ... ⟹ arg is a list; get/has/set arg "k" ⟹ arg is a dict (ptr) *)
+      (match flatten_app [] full_app with
+       | Some ("matchList", Var x :: _) when x = arg_name -> true
+       | Some (("get" | "has" | "set" | "remove"), Var x :: _) when x = arg_name -> true
+       | Some (_, args) ->
+           List.exists (arg_is_list_in_body arg_name) args
+       | None ->
+           (match full_app with
+            | App (f, a) ->
+                arg_is_list_in_body arg_name f || arg_is_list_in_body arg_name a
+            | _ -> false))
   | Lam (x, body) when x <> arg_name -> arg_is_list_in_body arg_name body
   | Let (_, v) -> arg_is_list_in_body arg_name v
+  | _ -> false
+
+(* Check if arg_name appears in direct function-call position, indicating a closure arg *)
+let rec arg_is_closure_in_body arg_name = function
+  | App (Var f, _) when f = arg_name -> true
+  | App (f, a) ->
+      arg_is_closure_in_body arg_name f || arg_is_closure_in_body arg_name a
+  | Match (e, arms) ->
+      arg_is_closure_in_body arg_name e ||
+      List.exists (fun (_, b) -> arg_is_closure_in_body arg_name b) arms
+  | Seq (a, b) -> arg_is_closure_in_body arg_name a || arg_is_closure_in_body arg_name b
+  | Lam (x, body) when x <> arg_name -> arg_is_closure_in_body arg_name body
+  | Let (_, v) -> arg_is_closure_in_body arg_name v
   | _ -> false
 
 (* Vars introduced as list by a cons pattern's tail binding *)
@@ -180,15 +244,20 @@ let rec cons_tail_vars = function
    is_list_arg: test if a var name is a list-typed argument. *)
 let rec body_returns_list_v list_fns list_vars is_list_arg = function
   | List _ -> true
+  | Dict _ -> true  (* dict literals are heap-allocated ptr *)
+  | Lam _ -> true  (* lambdas are heap-allocated — return ptr *)
   | Var x -> StringSet.mem x list_vars || StringSet.mem x list_fns || is_list_arg x
   | Match (_, arms) ->
       List.exists (fun (pat, body) ->
         let extra = cons_tail_vars pat in
         body_returns_list_v list_fns (StringSet.union list_vars extra) is_list_arg body) arms
   | Seq (_, b) -> body_returns_list_v list_fns list_vars is_list_arg b
+  | Let (_, v) -> body_returns_list_v list_fns list_vars is_list_arg v
   | App (f, _) ->
       (match flatten_app [] f with
        | Some ("cons", _) -> true
+       | Some ("matchList", _) -> true
+       | Some (("get" | "set"), _) -> true  (* dict get/set returns ptr *)
        | Some (name, _) -> StringSet.mem name list_fns
        | None -> false)
   | _ -> false
@@ -202,6 +271,14 @@ let declare_ext md name ft =
   | Some f -> f
   | None -> Llvm.declare_function name ft md
 
+(* Auto-unbox a dict value: if v is ptr (boxed f64), load the double.
+   Used in arithmetic operators so dict-get results work transparently. *)
+let auto_unbox_f64 ctx builder v =
+  match Llvm.classify_type (Llvm.type_of v) with
+  | Llvm.TypeKind.Pointer ->
+      Llvm.build_load (Llvm.double_type ctx) v "unbox" builder
+  | _ -> v
+
 (* ── Main expression compiler ───────────────────────────────────────────────── *)
 (* known_fns: name → (function_type, function_value)
    Storing ft explicitly avoids relying on Llvm.type_of which may return ptr in LLVM 18.
@@ -210,6 +287,7 @@ let declare_ext md name ft =
 let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llvalue) Hashtbl.t) env in_tail = function
   | Int n   -> Llvm.const_float (Llvm.double_type ctx) (float_of_int n)
   | Float f -> Llvm.const_float (Llvm.double_type ctx) f
+  | Lng n   -> Llvm.const_float (Llvm.double_type ctx) (Int64.to_float n)
   | Bool b  -> Llvm.const_float (Llvm.double_type ctx) (if b then 1.0 else 0.0)
 
   | Str s ->
@@ -248,47 +326,62 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
   | Lam (x, body) ->
       let f64 = Llvm.double_type ctx in
       let p = ptr_ty ctx in
-      let top = Hashtbl.fold (fun n _ s -> StringSet.add n s) known_fns StringSet.empty in
+      let i8 = Llvm.i8_type ctx in
+      let top = Hashtbl.fold (fun n _ s -> StringSet.add n s) known_fns inline_primitives in
       let fv_set = free_vars (StringSet.add x top) body in
       let fv = StringSet.elements fv_set in
+      (* Captured values with their types *)
+      let fv_caps = List.map (fun name ->
+        match StringMap.find_opt name env with
+        | Some v -> (name, v)
+        | None -> failwith (Printf.sprintf "codegen: lambda captures unbound variable '%s'" name)
+      ) fv in
       let lam_name = fresh_lam () in
-      let lft = Llvm.function_type f64 [| f64; p |] in
+      (* Determine arg and return types from static analysis *)
+      let arg_is_ptr = arg_is_list_in_body x body || arg_is_closure_in_body x body in
+      let ret_is_ptr = body_returns_list StringSet.empty body in
+      let arg_ty = if arg_is_ptr then p else f64 in
+      let ret_ty = if ret_is_ptr then p else f64 in
+      let lft = Llvm.function_type ret_ty [| arg_ty; p |] in
       let lam_fn = Llvm.define_function lam_name lft md in
       let lbb = Llvm.entry_block lam_fn in
       let lb  = Llvm.builder_at_end ctx lbb in
       Llvm.set_value_name x (Llvm.params lam_fn).(0);
       let env_param = (Llvm.params lam_fn).(1) in
+      (* Unpack env: byte-level GEP so mixed f64/ptr slots are handled correctly *)
       let lam_env =
-        List.fold_left (fun acc (i, name) ->
-          let idx = Llvm.const_int (Llvm.i64_type ctx) i in
-          let ep  = Llvm.build_gep f64 env_param [| idx |] ("ep_" ^ name) lb in
-          let v   = Llvm.build_load f64 ep name lb in
+        List.fold_left (fun acc (i, (name, cap_val)) ->
+          let slot_ty = Llvm.type_of cap_val in
+          let byte_off = Llvm.const_int (Llvm.i64_type ctx) (i * 8) in
+          let ep = Llvm.build_gep i8 env_param [| byte_off |] ("ep_" ^ name) lb in
+          let v  = Llvm.build_load slot_ty ep name lb in
           StringMap.add name v acc)
         (StringMap.singleton x (Llvm.params lam_fn).(0))
-        (List.mapi (fun i n -> (i, n)) fv)
+        (List.mapi (fun i nc -> (i, nc)) fv_caps)
       in
       let result = compile_expr ctx md lb known_fns lam_env true body in
-      (if Llvm.classify_type (Llvm.type_of result) <> Llvm.TypeKind.Double then
-        failwith "codegen: lambda body must return f64 (list-returning lambdas deferred to #95)");
       ignore (Llvm.build_ret result lb);
+      (* Pack env: byte-level GEP, store each captured value with its actual type *)
       let env_ptr =
         if fv = [] then Llvm.const_null p
         else begin
-          let n    = List.length fv in
+          let n    = List.length fv_caps in
           let size = Llvm.const_int (Llvm.i64_type ctx) (n * 8) in
           let mfn  = get_gc_malloc ctx md in
           let mft  = Llvm.function_type p [| Llvm.i64_type ctx |] in
           let ep   = Llvm.build_call mft mfn [| size |] "env_p" builder in
-          List.iteri (fun i name ->
-            let idx  = Llvm.const_int (Llvm.i64_type ctx) i in
-            let slot = Llvm.build_gep f64 ep [| idx |] ("es_" ^ name) builder in
-            let cap  = StringMap.find name env in
-            ignore (Llvm.build_store cap slot builder))
-          fv;
+          List.iteri (fun i (name, _) ->
+            let cap      = StringMap.find name env in
+            let slot_ty  = Llvm.type_of cap in
+            let byte_off = Llvm.const_int (Llvm.i64_type ctx) (i * 8) in
+            let slot     = Llvm.build_gep i8 ep [| byte_off |] ("es_" ^ name) builder in
+            ignore (Llvm.build_store cap slot builder);
+            ignore slot_ty)  (* slot_ty used via cap *)
+          fv_caps;
           ep
         end
       in
-      build_closure ctx builder lam_fn env_ptr
+      build_closure ctx md builder lam_fn env_ptr
 
   | App (e_fn, e_arg) ->
       let f64 = Llvm.double_type ctx in
@@ -310,22 +403,22 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
            let null_ptr = Llvm.const_null p in
            let cond = Llvm.build_icmp Llvm.Icmp.Eq lst null_ptr "is_empty" builder in
            Llvm.build_uitofp cond f64 "emptyf" builder
-       (* ── Comparison ops ── *)
+       (* ── Comparison ops (auto-unbox boxed f64 from dict get) ── *)
        | Some ("gt",  [a; b]) ->
-           let av = compile_expr ctx md builder known_fns env false a in
-           let bv = compile_expr ctx md builder known_fns env false b in
+           let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+           let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
            Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Ogt av bv "gt" builder) f64 "gtf" builder
        | Some ("lt",  [a; b]) ->
-           let av = compile_expr ctx md builder known_fns env false a in
-           let bv = compile_expr ctx md builder known_fns env false b in
+           let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+           let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
            Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Olt av bv "lt" builder) f64 "ltf" builder
        | Some ("gte", [a; b]) ->
-           let av = compile_expr ctx md builder known_fns env false a in
-           let bv = compile_expr ctx md builder known_fns env false b in
+           let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+           let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
            Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Oge av bv "gte" builder) f64 "gtef" builder
        | Some ("lte", [a; b]) ->
-           let av = compile_expr ctx md builder known_fns env false a in
-           let bv = compile_expr ctx md builder known_fns env false b in
+           let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+           let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
            Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Ole av bv "lte" builder) f64 "ltef" builder
        | Some ("not", [x]) ->
            let xv = compile_expr ctx md builder known_fns env false x in
@@ -352,12 +445,14 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
            let printf_fn = match Llvm.lookup_function "printf" md with
              | Some f -> f
              | None -> Llvm.declare_function "printf" printf_ft md in
-           let fmt_str = "%g\n\x00" in
+           let is_ptr = Llvm.classify_type (Llvm.type_of v) = Llvm.TypeKind.Pointer in
+           let fmt_str = if is_ptr then "%s\n\x00" else "%g\n\x00" in
+           let fmt_key = if is_ptr then ".fmt_s" else ".fmt_g" in
            let fmt_const = Llvm.const_string ctx fmt_str in
-           let fmt_global = match Llvm.lookup_global ".fmt_g" md with
+           let fmt_global = match Llvm.lookup_global fmt_key md with
              | Some g -> g
              | None ->
-                 let g = Llvm.define_global ".fmt_g" fmt_const md in
+                 let g = Llvm.define_global fmt_key fmt_const md in
                  Llvm.set_linkage Llvm.Linkage.Private g;
                  Llvm.set_global_constant true g;
                  g in
@@ -367,6 +462,46 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
              "fmt" builder in
            ignore (Llvm.build_call printf_ft printf_fn [| fmt_ptr; v |] "" builder);
            v
+       (* ── env / envOr ── *)
+       | Some ("env", [name_expr]) ->
+           let nv = compile_expr ctx md builder known_fns env false name_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p |] in
+           Llvm.build_call ft (declare_ext md "churing_env" ft) [| nv |] "env" builder
+       | Some ("envOr", [name_expr; default_expr]) ->
+           let nv = compile_expr ctx md builder known_fns env false name_expr in
+           let dv = compile_expr ctx md builder known_fns env false default_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_env_or" ft) [| nv; dv |] "envOr" builder
+       (* ── File I/O ── *)
+       | Some ("readFile", [path_e]) ->
+           let pv = compile_expr ctx md builder known_fns env false path_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p |] in
+           Llvm.build_call ft (declare_ext md "churing_read_file" ft) [| pv |] "rfile" builder
+       | Some ("writeFile", [path_e; content_e]) ->
+           let pv = compile_expr ctx md builder known_fns env false path_e in
+           let cv = compile_expr ctx md builder known_fns env false content_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_write_file" ft) [| pv; cv |] "wfile" builder
+       | Some ("appendFile", [path_e; content_e]) ->
+           let pv = compile_expr ctx md builder known_fns env false path_e in
+           let cv = compile_expr ctx md builder known_fns env false content_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_append_file" ft) [| pv; cv |] "afile" builder
+       | Some ("fileExists", [path_e]) ->
+           let pv = compile_expr ctx md builder known_fns env false path_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p |] in
+           Llvm.build_call ft (declare_ext md "churing_file_exists" ft) [| pv |] "fexists" builder
+       | Some ("deleteFile", [path_e]) ->
+           let pv = compile_expr ctx md builder known_fns env false path_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p |] in
+           Llvm.build_call ft (declare_ext md "churing_delete_file" ft) [| pv |] "delfile" builder
        (* ── String operations ── *)
        | Some ("length", [s_expr]) ->
            let sv = compile_expr ctx md builder known_fns env false s_expr in
@@ -431,11 +566,132 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
            let p = ptr_ty ctx in
            let ft = Llvm.function_type p [| f64 |] in
            Llvm.build_call ft (declare_ext md "churing_to_string" ft) [| nv |] "tostr" builder
+       | Some ("random", [arg_e]) ->
+           let av = compile_expr ctx md builder known_fns env false arg_e in
+           let ft = Llvm.function_type f64 [| f64 |] in
+           Llvm.build_call ft (declare_ext md "churing_random" ft) [| av |] "rnd" builder
+       | Some ("toInt", [arg_e]) ->
+           let av = compile_expr ctx md builder known_fns env false arg_e in
+           let ft = Llvm.function_type f64 [| f64 |] in
+           Llvm.build_call ft (declare_ext md "churing_to_int" ft) [| av |] "toint" builder
        | Some ("toFloat", [s_expr]) ->
            let sv = compile_expr ctx md builder known_fns env false s_expr in
            let p = ptr_ty ctx in
            let ft = Llvm.function_type f64 [| p |] in
            Llvm.build_call ft (declare_ext md "churing_to_float" ft) [| sv |] "tofloat" builder
+       (* ── Dict operations ── *)
+       | Some ("get", [dict_e; key_e]) ->
+           let dv = compile_expr ctx md builder known_fns env false dict_e in
+           let kv = compile_expr ctx md builder known_fns env false key_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_dict_get" ft) [| dv; kv |] "dget" builder
+       | Some ("set", [dict_e; key_e; val_e]) ->
+           let dv  = compile_expr ctx md builder known_fns env false dict_e in
+           let kv  = compile_expr ctx md builder known_fns env false key_e in
+           let raw = compile_expr ctx md builder known_fns env false val_e in
+           let p   = ptr_ty ctx in
+           let f64 = Llvm.double_type ctx in
+           let box_ft = Llvm.function_type p [| f64 |] in
+           let val_v =
+             match Llvm.classify_type (Llvm.type_of raw) with
+             | Llvm.TypeKind.Double ->
+                 Llvm.build_call box_ft (declare_ext md "churing_box_f64" box_ft) [| raw |] "boxed" builder
+             | _ -> raw
+           in
+           let set_ft = Llvm.function_type p [| p; p; p |] in
+           Llvm.build_call set_ft (declare_ext md "churing_dict_set" set_ft) [| dv; kv; val_v |] "dset" builder
+       | Some ("has", [dict_e; key_e]) ->
+           let dv = compile_expr ctx md builder known_fns env false dict_e in
+           let kv = compile_expr ctx md builder known_fns env false key_e in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_dict_has" ft) [| dv; kv |] "dhas" builder
+       | Some ("indexOf", [s_expr; sub_expr]) ->
+           let sv  = compile_expr ctx md builder known_fns env false s_expr in
+           let sub = compile_expr ctx md builder known_fns env false sub_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type f64 [| p; p |] in
+           Llvm.build_call ft (declare_ext md "churing_index_of" ft) [| sv; sub |] "indexof" builder
+       | Some ("charAt", [s_expr; idx_expr]) ->
+           let sv  = compile_expr ctx md builder known_fns env false s_expr in
+           let iv  = compile_expr ctx md builder known_fns env false idx_expr in
+           let p = ptr_ty ctx in
+           let ft = Llvm.function_type p [| p; f64 |] in
+           Llvm.build_call ft (declare_ext md "churing_char_at" ft) [| sv; iv |] "charat" builder
+       (* ── matchBool: lazy if-then-else (Scott-encoded boolean) ── *)
+       | Some ("matchBool", [cond_e; then_e; else_e]) ->
+           let cond_v = compile_expr ctx md builder known_fns env false cond_e in
+           let cond_v = auto_unbox_f64 ctx builder cond_v in
+           let zero = Llvm.const_float f64 0.0 in
+           let cmp = Llvm.build_fcmp Llvm.Fcmp.One cond_v zero "mb_cond" builder in
+           let fn = Llvm.block_parent (Llvm.insertion_block builder) in
+           let then_bb  = Llvm.append_block ctx "mb_then"  fn in
+           let else_bb  = Llvm.append_block ctx "mb_else"  fn in
+           let merge_bb = Llvm.append_block ctx "mb_merge" fn in
+           ignore (Llvm.build_cond_br cmp then_bb else_bb builder);
+           Llvm.position_at_end then_bb builder;
+           let then_v = compile_expr ctx md builder known_fns env in_tail then_e in
+           let then_end = Llvm.insertion_block builder in
+           ignore (Llvm.build_br merge_bb builder);
+           Llvm.position_at_end else_bb builder;
+           let else_v = compile_expr ctx md builder known_fns env in_tail else_e in
+           let else_end = Llvm.insertion_block builder in
+           ignore (Llvm.build_br merge_bb builder);
+           Llvm.position_at_end merge_bb builder;
+           Llvm.build_phi [(then_v, then_end); (else_v, else_end)] "mb_r" builder
+       (* ── matchList: pattern match on list (Church-style eliminator) ── *)
+       | Some ("matchList", [lst_e; nil_fn_e; cons_fn_e]) ->
+           let lst_v    = compile_expr ctx md builder known_fns env false lst_e in
+           let nil_fn_v = compile_expr ctx md builder known_fns env false nil_fn_e in
+           let cons_fn_v= compile_expr ctx md builder known_fns env false cons_fn_e in
+           (* Return type: infer from nil_fn body (e.g. Lam("_", List[]) → ptr) *)
+           let ret_is_ptr = match nil_fn_e with
+             | Lam (_, body) -> body_returns_list StringSet.empty body
+             | _ -> false
+           in
+           let ret_ty = if ret_is_ptr then p else f64 in
+           let fn = Llvm.block_parent (Llvm.insertion_block builder) in
+           let nil_bb  = Llvm.append_block ctx "ml_nil"  fn in
+           let cons_bb = Llvm.append_block ctx "ml_cons" fn in
+           let end_bb  = Llvm.append_block ctx "ml_end"  fn in
+           let null_ptr = Llvm.const_null p in
+           let is_nil = Llvm.build_icmp Llvm.Icmp.Eq lst_v null_ptr "is_nil" builder in
+           ignore (Llvm.build_cond_br is_nil nil_bb cons_bb builder);
+           Llvm.position_at_end nil_bb builder;
+           let dummy = Llvm.const_float f64 0.0 in
+           let nil_result = call_closure ctx builder nil_fn_v dummy ret_ty in
+           let nil_pred = Llvm.insertion_block builder in
+           ignore (Llvm.build_br end_bb builder);
+           Llvm.position_at_end cons_bb builder;
+           let head_v = build_list_head ctx builder lst_v in
+           let tail_v = build_list_tail ctx builder lst_v in
+           let partial = call_closure ctx builder cons_fn_v head_v p in
+           let cons_result = call_closure ctx builder partial tail_v ret_ty in
+           let cons_pred = Llvm.insertion_block builder in
+           ignore (Llvm.build_br end_bb builder);
+           Llvm.position_at_end end_bb builder;
+           Llvm.build_phi [(nil_result, nil_pred); (cons_result, cons_pred)] "ml_r" builder
+       (* ── if cond then_val else_val ── *)
+       | Some ("if", [cond_e; then_e; else_e]) ->
+           let cond_v = compile_expr ctx md builder known_fns env false cond_e in
+           let zero = Llvm.const_float f64 0.0 in
+           let cmp = Llvm.build_fcmp Llvm.Fcmp.One cond_v zero "if_cond" builder in
+           let fn = Llvm.block_parent (Llvm.insertion_block builder) in
+           let then_bb  = Llvm.append_block ctx "if_then"  fn in
+           let else_bb  = Llvm.append_block ctx "if_else"  fn in
+           let merge_bb = Llvm.append_block ctx "if_merge" fn in
+           ignore (Llvm.build_cond_br cmp then_bb else_bb builder);
+           Llvm.position_at_end then_bb builder;
+           let then_v = compile_expr ctx md builder known_fns env in_tail then_e in
+           let then_end = Llvm.insertion_block builder in
+           ignore (Llvm.build_br merge_bb builder);
+           Llvm.position_at_end else_bb builder;
+           let else_v = compile_expr ctx md builder known_fns env in_tail else_e in
+           let else_end = Llvm.insertion_block builder in
+           ignore (Llvm.build_br merge_bb builder);
+           Llvm.position_at_end merge_bb builder;
+           Llvm.build_phi [(then_v, then_end); (else_v, else_end)] "if_r" builder
        (* ── Known function direct call ── *)
        | Some (name, args) ->
            (match Hashtbl.find_opt known_fns name with
@@ -449,16 +705,29 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
                 end else begin
                   let fv = compile_expr ctx md builder known_fns env false e_fn in
                   let av = compile_expr ctx md builder known_fns env false e_arg in
-                  call_closure ctx builder fv av
+                  call_closure ctx builder fv av f64
                 end
             | None ->
-                let fv = compile_expr ctx md builder known_fns env false e_fn in
-                let av = compile_expr ctx md builder known_fns env false e_arg in
-                call_closure ctx builder fv av)
+                (* Unresolved name: simulate curried closure application over all args.
+                   Non-final calls return ptr (intermediate closure); final returns f64. *)
+                let fv = compile_expr ctx md builder known_fns env false (Var name) in
+                let vargs = List.map (compile_expr ctx md builder known_fns env false) args in
+                let n = List.length vargs in
+                snd (List.fold_left (fun (i, clos) av ->
+                  let ret_ty = if i = n - 1 then f64 else p in
+                  (i + 1, call_closure ctx builder clos av ret_ty)
+                ) (0, fv) vargs))
        | None ->
+           (* Non-variable function position: determine return type from e_fn shape *)
            let fv = compile_expr ctx md builder known_fns env false e_fn in
            let av = compile_expr ctx md builder known_fns env false e_arg in
-           call_closure ctx builder fv av)
+           let ret_ty = match e_fn with
+             | Lam (_, lbody) ->
+                 if body_returns_list StringSet.empty lbody then p else f64
+             | App _ -> p  (* intermediate curried call returns a closure *)
+             | _ -> f64
+           in
+           call_closure ctx builder fv av ret_ty)
 
   | List items ->
       let p = ptr_ty ctx in
@@ -549,51 +818,57 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
        | [] -> failwith "codegen: match with no reachable arms"
        | results -> Llvm.build_phi results "match_r" builder)
 
-  | Seq (Let (name, ve), rest) ->
-      let v = compile_expr ctx md builder known_fns env false ve in
-      compile_expr ctx md builder known_fns (StringMap.add name v env) in_tail rest
+  (* Seq: parse_seq builds left-folded trees Seq(Seq(Seq(e1,e2),e3),e4).
+     Flatten via compile_seq_for_env so Let/FunDef bindings thread through env
+     regardless of whether the tree is left- or right-nested. *)
   | Seq (a, b) ->
-      ignore (compile_expr ctx md builder known_fns env false a);
-      compile_expr ctx md builder known_fns env in_tail b
+      let env' = compile_seq_for_env ctx md builder known_fns env a in
+      compile_expr ctx md builder known_fns env' in_tail b
   | Let (_, ve) ->
       compile_expr ctx md builder known_fns env in_tail ve
 
   | Add (a, b) ->
-      Llvm.build_fadd
-        (compile_expr ctx md builder known_fns env false a)
-        (compile_expr ctx md builder known_fns env false b)
-        "add" builder
+      let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+      let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
+      Llvm.build_fadd av bv "add" builder
   | Sub (a, b) ->
-      Llvm.build_fsub
-        (compile_expr ctx md builder known_fns env false a)
-        (compile_expr ctx md builder known_fns env false b)
-        "sub" builder
+      let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+      let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
+      Llvm.build_fsub av bv "sub" builder
   | Mul (a, b) ->
-      Llvm.build_fmul
-        (compile_expr ctx md builder known_fns env false a)
-        (compile_expr ctx md builder known_fns env false b)
-        "mul" builder
+      let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+      let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
+      Llvm.build_fmul av bv "mul" builder
   | Div (a, b) ->
-      Llvm.build_fdiv
-        (compile_expr ctx md builder known_fns env false a)
-        (compile_expr ctx md builder known_fns env false b)
-        "div" builder
+      let av = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false a) in
+      let bv = auto_unbox_f64 ctx builder (compile_expr ctx md builder known_fns env false b) in
+      Llvm.build_fdiv av bv "div" builder
   | Eq (a, b) ->
       let f64 = Llvm.double_type ctx in
       let p = ptr_ty ctx in
       let av = compile_expr ctx md builder known_fns env false a in
       let bv = compile_expr ctx md builder known_fns env false b in
-      (match Llvm.classify_type (Llvm.type_of av) with
-       | Llvm.TypeKind.Pointer ->
+      (* Mixed ptr/f64: one is a boxed double from a dict get, unbox before comparing *)
+      let av_is_ptr = Llvm.classify_type (Llvm.type_of av) = Llvm.TypeKind.Pointer in
+      let bv_is_ptr = Llvm.classify_type (Llvm.type_of bv) = Llvm.TypeKind.Pointer in
+      (match av_is_ptr, bv_is_ptr with
+       | true, true ->
+           (* Both ptr: string comparison *)
            let strcmp_ft = Llvm.function_type (Llvm.i32_type ctx) [| p; p |] in
            let strcmp_fn = declare_ext md "strcmp" strcmp_ft in
            let cmp = Llvm.build_call strcmp_ft strcmp_fn [| av; bv |] "scmp" builder in
            let z = Llvm.const_int (Llvm.i32_type ctx) 0 in
            Llvm.build_uitofp (Llvm.build_icmp Llvm.Icmp.Eq cmp z "seq" builder) f64 "seqf" builder
-       | _ ->
-           Llvm.build_uitofp
-             (Llvm.build_fcmp Llvm.Fcmp.Oeq av bv "eq" builder)
-             f64 "eqf" builder)
+       | true, false ->
+           (* av is boxed double, bv is f64 *)
+           let av_f = Llvm.build_load f64 av "unbox" builder in
+           Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Oeq av_f bv "eq" builder) f64 "eqf" builder
+       | false, true ->
+           (* av is f64, bv is boxed double *)
+           let bv_f = Llvm.build_load f64 bv "unbox" builder in
+           Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Oeq av bv_f "eq" builder) f64 "eqf" builder
+       | false, false ->
+           Llvm.build_uitofp (Llvm.build_fcmp Llvm.Fcmp.Oeq av bv "eq" builder) f64 "eqf" builder)
 
   | Llvm (intrinsic, args) ->
       let f64 = Llvm.double_type ctx in
@@ -606,13 +881,53 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
       in
       Llvm.build_call ft fn (Array.of_list vargs) "r" builder
 
+  | Dict entries ->
+      (* Alist: each entry = 24-byte node {key_ptr, value_ptr, next_ptr}.
+         f64 values are boxed via churing_box_f64 so all values are stored as ptr. *)
+      let p = ptr_ty ctx in
+      let f64 = Llvm.double_type ctx in
+      let set_ft = Llvm.function_type p [| p; p; p |] in
+      let set_fn = declare_ext md "churing_dict_set" set_ft in
+      let box_ft = Llvm.function_type p [| f64 |] in
+      let box_fn = declare_ext md "churing_box_f64" box_ft in
+      let null_p = Llvm.const_null p in
+      List.fold_left (fun acc_dict (key_str, val_e) ->
+        let key_v = compile_expr ctx md builder known_fns env false (Str key_str) in
+        let raw   = compile_expr ctx md builder known_fns env false val_e in
+        let val_v =
+          match Llvm.classify_type (Llvm.type_of raw) with
+          | Llvm.TypeKind.Double ->
+              Llvm.build_call box_ft box_fn [| raw |] "boxed" builder
+          | _ -> raw
+        in
+        Llvm.build_call set_ft set_fn [| acc_dict; key_v; val_v |] "dict" builder
+      ) null_p entries
+  | Try  _ -> failwith "codegen: try/catch not yet supported in native compile"
+  | Import _ -> Llvm.const_float (Llvm.double_type ctx) 0.0  (* resolved before codegen *)
   | e -> failwith ("codegen: unsupported expression: " ^ string_of_expr e)
+
+(* Process a sub-expression for its side effects and Let/FunDef bindings.
+   Returns updated env. Used by the Seq case to handle left-folded parse trees. *)
+and compile_seq_for_env ctx md builder known_fns env = function
+  | Let (name, ve) ->
+      let v = compile_expr ctx md builder known_fns env false ve in
+      StringMap.add name v env
+  | FunDef (name, args, body) ->
+      ignore (compile_fundef ctx md known_fns name args body);
+      env
+  | Seq (a, b) ->
+      let env' = compile_seq_for_env ctx md builder known_fns env a in
+      compile_seq_for_env ctx md builder known_fns env' b
+  | e ->
+      ignore (compile_expr ctx md builder known_fns env false e);
+      env
 
 (* Compile a named function body into its pre-declared (or freshly declared) LLVM function.
    When called from compile_module, the function is already in known_fns (from the pre-pass)
    and has a mangled LLVM name to prevent libc symbol conflicts.
-   When called from the JIT path, known_fns is empty and we define a fresh function. *)
-let compile_fundef ctx md known_fns name args body =
+   When called from the JIT path, known_fns is empty and we define a fresh function.
+   Mutually recursive with compile_expr (nested ~defs inside function bodies). *)
+and compile_fundef ctx md known_fns name args body =
   let f64 = Llvm.double_type ctx in
   let p = ptr_ty ctx in
   let fn, ft = match Hashtbl.find_opt known_fns name with
@@ -673,10 +988,11 @@ let compile_module exprs =
       (Hashtbl.replace list_arg_tbl (fn, i) true; true)
     else false
   in
-  (* Seed: arg directly matched with cons/nil *)
+  (* Seed: arg directly matched with cons/nil, or used in function-call position (closure) *)
   List.iter (fun (name, args, body) ->
     List.iteri (fun i a ->
-      if arg_is_list_in_body a body then ignore (mark name i)) args
+      if arg_is_list_in_body a body || arg_is_closure_in_body a body
+      then ignore (mark name i)) args
   ) fundefs;
   (* Seed: arg appears as cons tail — cons _ arg *)
   List.iter (fun (name, args, body) ->
@@ -833,8 +1149,49 @@ let find_runtime_lib () =
 
 let compile_to_binary ?(output="a.out") exprs =
   ensure_initialized ();
-  let stdlib = load_stdlib_fundefs "math.ch" @ load_stdlib_fundefs "prelude.ch" in
-  let all_exprs = stdlib @ exprs in
+  let stdlib =
+    load_stdlib_fundefs "math.ch"       @
+    load_stdlib_fundefs "prelude.ch"    @
+    load_stdlib_fundefs "operators.ch"  @
+    (* list.ch skipped: prelude.ch covers sum/product/append/take/drop/any/all;
+       zip/flatten need polymorphic cons cells (Task #22) *)
+    load_stdlib_fundefs "vector.ch"     @
+    load_stdlib_fundefs "matrix.ch"     @
+    load_stdlib_fundefs "activations.ch" @
+    load_stdlib_fundefs "loss.ch"       @
+    load_stdlib_fundefs "nn.ch"
+  in
+  (* Tree-shake: only compile stdlib functions the program transitively uses.
+     The full ML stdlib (vector/matrix/nn) currently emits invalid IR for some
+     functions (#117); force-loading all of it broke every compile (#110), even
+     trivial programs. Reachability over free_vars keeps unused (and currently
+     broken) functions out of the module entirely. Functions referenced that are
+     runtime primitives rather than FunDefs are simply ignored here — they are
+     declared on demand during codegen. *)
+  let stdlib_tbl : (string, string list * expr) Hashtbl.t = Hashtbl.create 64 in
+  List.iter (function
+    | FunDef (n, args, body) ->
+        if not (Hashtbl.mem stdlib_tbl n) then Hashtbl.add stdlib_tbl n (args, body)
+    | _ -> ()) stdlib;
+  let reachable = ref StringSet.empty in
+  let worklist = ref [] in
+  let add_name n =
+    if Hashtbl.mem stdlib_tbl n && not (StringSet.mem n !reachable) then begin
+      reachable := StringSet.add n !reachable;
+      worklist := n :: !worklist
+    end in
+  List.iter (fun e -> StringSet.iter add_name (free_vars StringSet.empty e)) exprs;
+  while !worklist <> [] do
+    let n = List.hd !worklist in
+    worklist := List.tl !worklist;
+    let (args, body) = Hashtbl.find stdlib_tbl n in
+    let bound = List.fold_left (fun s a -> StringSet.add a s) StringSet.empty args in
+    StringSet.iter add_name (free_vars bound body)
+  done;
+  let stdlib_used = List.filter (function
+    | FunDef (n, _, _) -> StringSet.mem n !reachable
+    | _ -> false) stdlib in
+  let all_exprs = stdlib_used @ exprs in
   let (ctx, md, known_fns) = compile_module all_exprs in
   let non_fundefs = List.filter (function FunDef _ -> false | _ -> true) exprs in
   if non_fundefs <> [] then

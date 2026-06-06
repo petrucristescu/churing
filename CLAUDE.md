@@ -2,6 +2,11 @@
 
 A functional programming language named after Alonzo Church and Alan Turing, implemented in OCaml.
 
+> **Native compile work:** the current active effort is bringing `churing compile` (LLVM →
+> native binary) to full interpreter parity. The canonical resume doc — current state, the
+> ordered issue plan, and the keystone blocker (#117) — is **`docs/native-compile-roadmap.md`**.
+> Read it first when resuming this work, and update it (plus sync GitHub issues) after every step.
+
 ## Project Structure
 
 - `src/churing.ml` — Entry point: parse → type-infer → evaluate
