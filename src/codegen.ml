@@ -86,7 +86,16 @@ let rec free_vars bound = function
         let bound' = StringSet.union bound (pattern_vars pat) in
         StringSet.union s (free_vars bound' body))
       fv_e arms
-  | _ -> StringSet.empty
+  | Assert e -> free_vars bound e
+  | Dict entries ->
+      List.fold_left (fun s (_, v) -> StringSet.union s (free_vars bound v))
+        StringSet.empty entries
+  | Try (e, h) -> StringSet.union (free_vars bound e) (free_vars bound h)
+  | FunDef (name, args, body) ->
+      let bound' = List.fold_left (fun s a -> StringSet.add a s)
+        (StringSet.add name bound) args in
+      free_vars bound' body
+  | Import _ -> StringSet.empty
 
 (* Flatten App(App(Var f, a1), a2) → Some (f, [a1; a2]) *)
 let rec flatten_app acc = function
@@ -195,9 +204,10 @@ let rec arg_is_list_in_body arg_name = function
       List.exists (fun (_, b) -> arg_is_list_in_body arg_name b) arms
   | Seq (a, b) -> arg_is_list_in_body arg_name a || arg_is_list_in_body arg_name b
   | App _ as full_app ->
-      (* matchList arg ... ⟹ arg is a list *)
+      (* matchList arg ... ⟹ arg is a list; get/has/set arg "k" ⟹ arg is a dict (ptr) *)
       (match flatten_app [] full_app with
        | Some ("matchList", Var x :: _) when x = arg_name -> true
+       | Some (("get" | "has" | "set" | "remove"), Var x :: _) when x = arg_name -> true
        | Some (_, args) ->
            List.exists (arg_is_list_in_body arg_name) args
        | None ->
@@ -234,6 +244,7 @@ let rec cons_tail_vars = function
    is_list_arg: test if a var name is a list-typed argument. *)
 let rec body_returns_list_v list_fns list_vars is_list_arg = function
   | List _ -> true
+  | Dict _ -> true  (* dict literals are heap-allocated ptr *)
   | Lam _ -> true  (* lambdas are heap-allocated — return ptr *)
   | Var x -> StringSet.mem x list_vars || StringSet.mem x list_fns || is_list_arg x
   | Match (_, arms) ->
@@ -241,10 +252,12 @@ let rec body_returns_list_v list_fns list_vars is_list_arg = function
         let extra = cons_tail_vars pat in
         body_returns_list_v list_fns (StringSet.union list_vars extra) is_list_arg body) arms
   | Seq (_, b) -> body_returns_list_v list_fns list_vars is_list_arg b
+  | Let (_, v) -> body_returns_list_v list_fns list_vars is_list_arg v
   | App (f, _) ->
       (match flatten_app [] f with
        | Some ("cons", _) -> true
        | Some ("matchList", _) -> true
+       | Some (("get" | "set"), _) -> true  (* dict get/set returns ptr *)
        | Some (name, _) -> StringSet.mem name list_fns
        | None -> false)
   | _ -> false
@@ -1140,14 +1153,45 @@ let compile_to_binary ?(output="a.out") exprs =
     load_stdlib_fundefs "math.ch"       @
     load_stdlib_fundefs "prelude.ch"    @
     load_stdlib_fundefs "operators.ch"  @
-    load_stdlib_fundefs "list.ch"       @
+    (* list.ch skipped: prelude.ch covers sum/product/append/take/drop/any/all;
+       zip/flatten need polymorphic cons cells (Task #22) *)
     load_stdlib_fundefs "vector.ch"     @
     load_stdlib_fundefs "matrix.ch"     @
     load_stdlib_fundefs "activations.ch" @
     load_stdlib_fundefs "loss.ch"       @
     load_stdlib_fundefs "nn.ch"
   in
-  let all_exprs = stdlib @ exprs in
+  (* Tree-shake: only compile stdlib functions the program transitively uses.
+     The full ML stdlib (vector/matrix/nn) currently emits invalid IR for some
+     functions (#117); force-loading all of it broke every compile (#110), even
+     trivial programs. Reachability over free_vars keeps unused (and currently
+     broken) functions out of the module entirely. Functions referenced that are
+     runtime primitives rather than FunDefs are simply ignored here — they are
+     declared on demand during codegen. *)
+  let stdlib_tbl : (string, string list * expr) Hashtbl.t = Hashtbl.create 64 in
+  List.iter (function
+    | FunDef (n, args, body) ->
+        if not (Hashtbl.mem stdlib_tbl n) then Hashtbl.add stdlib_tbl n (args, body)
+    | _ -> ()) stdlib;
+  let reachable = ref StringSet.empty in
+  let worklist = ref [] in
+  let add_name n =
+    if Hashtbl.mem stdlib_tbl n && not (StringSet.mem n !reachable) then begin
+      reachable := StringSet.add n !reachable;
+      worklist := n :: !worklist
+    end in
+  List.iter (fun e -> StringSet.iter add_name (free_vars StringSet.empty e)) exprs;
+  while !worklist <> [] do
+    let n = List.hd !worklist in
+    worklist := List.tl !worklist;
+    let (args, body) = Hashtbl.find stdlib_tbl n in
+    let bound = List.fold_left (fun s a -> StringSet.add a s) StringSet.empty args in
+    StringSet.iter add_name (free_vars bound body)
+  done;
+  let stdlib_used = List.filter (function
+    | FunDef (n, _, _) -> StringSet.mem n !reachable
+    | _ -> false) stdlib in
+  let all_exprs = stdlib_used @ exprs in
   let (ctx, md, known_fns) = compile_module all_exprs in
   let non_fundefs = List.filter (function FunDef _ -> false | _ -> true) exprs in
   if non_fundefs <> [] then
