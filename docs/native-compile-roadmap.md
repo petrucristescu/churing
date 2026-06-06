@@ -19,7 +19,7 @@ _Last verified: 2026-06-06._
 - Interpreter: healthy (31 unit incl. 16 codegen, ~50 integration pass).
 - Native tests: **5/5 PASS** — 01_arithmetic, 02_logic, 03_print, 04_stdlib, 05_strings.
 - Last change: tree-shaking in `compile_to_binary` (commit `efd3275`, branch
-  `fix/treeshake-stdlib-native-compile`, **not pushed**) — only stdlib FunDefs transitively
+  `fix/treeshake-stdlib-native-compile`, pushed — **PR #120** open against master) — only stdlib FunDefs transitively
   reachable from the user program are compiled (reachability over `free_vars`), so the
   still-broken ML stdlib isn't dragged into trivial programs. Also made `free_vars`
   exhaustive (was empty for Assert/FunDef/Dict/Try/Import).
