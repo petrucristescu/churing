@@ -14,7 +14,6 @@ let rec apply subst t =
   | TFun (a, b) -> TFun (apply subst a, apply subst b)
   | TList a -> TList (apply subst a)
   | TDict a -> TDict (apply subst a)
-  | TArray a -> TArray (apply subst a)
   | _ -> t
 
 let compose s1 s2 =
@@ -35,7 +34,6 @@ let rec occurs v = function
   | TFun (a, b) -> occurs v a || occurs v b
   | TList a -> occurs v a
   | TDict a -> occurs v a
-  | TArray a -> occurs v a
   | _ -> false
 
 let rec unify t1 t2 =
@@ -51,8 +49,6 @@ let rec unify t1 t2 =
       compose s2 s1
   | TList a1, TList a2 -> unify a1 a2
   | TDict a1, TDict a2 -> unify a1 a2
-  | TArray a1, TArray a2 -> unify a1 a2
-  | TTensor, TTensor -> []
   | _ -> raise (TypeError ("Cannot unify types: " ^ Ast.string_of_typ t1 ^ " and " ^ Ast.string_of_typ t2))
 
 (* Scheme helpers *)
@@ -70,7 +66,6 @@ let free_vars_typ t =
     | TFun (a, b) -> aux (aux acc a) b
     | TList a -> aux acc a
     | TDict a -> aux acc a
-    | TArray a -> aux acc a
     | _ -> acc
   in aux [] t
 
@@ -96,7 +91,6 @@ let instantiate (Forall (vars, t)) =
     | TFun (a, b) -> TFun (aux a, aux b)
     | TList a -> TList (aux a)
     | TDict a -> TDict (aux a)
-    | TArray a -> TArray (aux a)
     | t -> t
   in aux t
 
@@ -296,33 +290,6 @@ let add_operators_to_env env =
   (* matchBool : Bool -> a -> a -> a *)
   let env = StringMap.add "matchBool" (mono (TFun (TBool, TFun (mb_a, TFun (mb_b, mb_a))))) env in
 
-  (* Generic array operations — polymorphic over element type *)
-  let ar_a = fresh_var () in
-  let env = StringMap.add "arrayCreate" (mono (TFun (TInt, TFun (ar_a, TArray ar_a)))) env in
-  let ar_b = fresh_var () in
-  let env = StringMap.add "arrayGet" (mono (TFun (TArray ar_b, TFun (TInt, ar_b)))) env in
-  let ar_c = fresh_var () in
-  let env = StringMap.add "arraySet" (mono (TFun (TArray ar_c, TFun (TInt, TFun (ar_c, TArray ar_c))))) env in
-  let ar_d = fresh_var () in
-  let env = StringMap.add "arrayLength" (mono (TFun (TArray ar_d, TInt))) env in
-  let ar_e = fresh_var () in
-  let env = StringMap.add "arrayFromList" (mono (TFun (TList ar_e, TArray ar_e))) env in
-  let ar_f = fresh_var () in
-  let env = StringMap.add "arrayToList" (mono (TFun (TArray ar_f, TList ar_f))) env in
-
-  (* Tensor primitives *)
-  let t = TTensor in
-  let env = StringMap.add "tensorCreate" (mono (TFun (TInt, TFun (TInt, TFun (TFloat, t))))) env in
-  let env = StringMap.add "tensorGet" (mono (TFun (t, TFun (TInt, TFun (TInt, TFloat))))) env in
-  let env = StringMap.add "tensorSet" (mono (TFun (t, TFun (TInt, TFun (TInt, TFun (TFloat, t)))))) env in
-  let env = StringMap.add "tensorRows" (mono (TFun (t, TInt))) env in
-  let env = StringMap.add "tensorCols" (mono (TFun (t, TInt))) env in
-  let env = StringMap.add "tensorShape" (mono (TFun (t, TList TInt))) env in
-  let env = StringMap.add "tensorVec" (mono (TFun (TList TFloat, t))) env in
-  let env = StringMap.add "tensorMat" (mono (TFun (TList (TList TFloat), t))) env in
-  let env = StringMap.add "tensorToVec" (mono (TFun (t, TList TFloat))) env in
-  let env = StringMap.add "tensorToMat" (mono (TFun (t, TList (TList TFloat)))) env in
-  let env = StringMap.add "tensorRandom" (mono (TFun (TInt, TFun (TInt, TFun (TFloat, t))))) env in
   env
 
 let rec infer env = function
