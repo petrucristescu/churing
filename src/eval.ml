@@ -595,6 +595,50 @@ let create_json_functions env =
       | VString s -> json_to_value s
       | _ -> raise (RuntimeError "fromJson: expected string")))
 
+(* AI — `ask` calls an LLM and returns a Result (["ok", text] / ["err", msg]).
+   Backend: a deterministic mock via CHURING_ASK_MOCK (offline/reproducible), else
+   Ollama via curl (OLLAMA_HOST default http://localhost:11434,
+   OLLAMA_MODEL default qwen2.5:0.5b). *)
+let create_ai_functions env =
+  let read_all ic =
+    let buf = Buffer.create 256 in
+    (try while true do Buffer.add_char buf (input_char ic) done
+     with End_of_file -> ());
+    Buffer.contents buf
+  in
+  let ok_v v   = VList [VString "ok"; v] in
+  let err_v m  = VList [VString "err"; VString m] in
+  let getenv k d = match Sys.getenv_opt k with Some s when s <> "" -> s | _ -> d in
+  env
+  |> StringMap.add "ask" (VPrim (fun args ->
+      let prompt = match List.hd args with
+        | VString s -> s
+        | _ -> raise (RuntimeError "ask: expected a string prompt") in
+      match Sys.getenv_opt "CHURING_ASK_MOCK" with
+      | Some canned -> ok_v (VString canned)
+      | None ->
+          let host  = getenv "OLLAMA_HOST" "http://localhost:11434" in
+          let model = getenv "OLLAMA_MODEL" "qwen2.5:0.5b" in
+          let body  = value_to_json (VDict [
+            ("model", VString model); ("prompt", VString prompt); ("stream", VBool false)]) in
+          let cmd = Printf.sprintf "curl -s %s -d %s"
+            (Filename.quote (host ^ "/api/generate")) (Filename.quote body) in
+          (try
+            let ic = Unix.open_process_in cmd in
+            let output = read_all ic in
+            (match Unix.close_process_in ic with
+             | Unix.WEXITED 0 ->
+                 (try
+                    match json_to_value output with
+                    | VDict kvs ->
+                        (match List.assoc_opt "response" kvs with
+                         | Some (VString r) -> ok_v (VString r)
+                         | _ -> err_v "ask: model output missing 'response' field")
+                    | _ -> err_v "ask: unexpected model output"
+                  with _ -> err_v ("ask: could not parse model output: " ^ String.trim output))
+             | _ -> err_v "ask: request failed (is Ollama running?)")
+           with e -> err_v ("ask: " ^ Printexc.to_string e))))
+
 (* MySQL driver — shells out to mysql CLI *)
 let create_mysql_functions env =
   let expect_string name = function
@@ -974,6 +1018,7 @@ let rec eval_with_imports env expr =
         | "io" -> create_io_functions env
         | "dict" -> create_dict_functions env
         | "json" -> create_json_functions env
+        | "ai" -> create_ai_functions env
         | "mysql" -> create_mysql_functions env
         | _ -> env
       in
@@ -1185,7 +1230,7 @@ let rec eval_toplevel (env : env) (expr : expr) : env * value option =
       (env, Some v)
 
 let load_prelude () =
-  let stdlib = ["operators"; "math"; "string"; "list"; "time"; "io"; "dict"; "json"; "mysql"; "church_list"; "result"; "vector"; "matrix"] in
+  let stdlib = ["operators"; "math"; "string"; "list"; "time"; "io"; "dict"; "json"; "ai"; "mysql"; "church_list"; "result"; "vector"; "matrix"] in
   List.fold_left (fun env lib ->
     fst (eval_with_imports env (Import lib))
   ) StringMap.empty stdlib

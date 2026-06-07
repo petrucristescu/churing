@@ -4,7 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install dependencies (matching GitHub Actions setup)
 RUN apt-get update && \
-    apt-get install -y bubblewrap wget gcc g++ make patch unzip m4 git ca-certificates bzip2 default-mysql-client && \
+    apt-get install -y bubblewrap wget curl gcc g++ make patch unzip m4 git ca-certificates bzip2 default-mysql-client && \
     rm -rf /var/lib/apt/lists/*
 
 # Install opam 2.1.5 (same version as CI)
