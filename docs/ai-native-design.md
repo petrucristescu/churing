@@ -4,9 +4,12 @@
 > Interpreter-only — the interpreter is the fast iteration vehicle for language *semantics*.
 > Working rule: after every step, update this doc + sync issues.
 >
-> _Progress (branch `feat/monadic-result-remove-try`): ✅ try/catch removed → monadic `Result`
-> (tagged rep + `safe*` + `attempt`; unit 16/16, integration 52/0). ✅ README/CLAUDE.md reflect the
-> direction. **Next: the `ask` primitive (mock backend) + structured output + test (#99).**_
+> _Progress: ✅ try/catch → monadic `Result` (tagged rep + `safe*` + `attempt`). ✅ Native LLVM
+> backend + ML stack + digits stripped from master (interpreter-only; archived on
+> `archive/native-compile-ml`). ✅ **`ask` primitive landed and proven end-to-end** — mock +
+> Ollama via curl, returns `Result`; verified against qwen2.5:0.5b (#99 closed). Test:
+> `run-tests-llm.sh` + `src/test/llm_ask.ch`. **Next (optional): type-directed structured output
+> for `ask`** (ask for a typed value with parse/validate/retry)._
 
 ## Why this, and only this
 
