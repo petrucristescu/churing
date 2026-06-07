@@ -40,8 +40,8 @@ assert (eq (get rebuilt "name") "Alice")
 @empty {}
 assert (eq (len (keys empty)) 0)
 
-# Error handling
-@result (try (get user "missing") (|>e. "caught"))
+# Error handling — monadic (safeGet)
+@result (unwrapOr "caught" (safeGet user "missing"))
 assert (eq result "caught")
 
 # Option B: Church-encoded dict (association list)

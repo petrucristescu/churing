@@ -356,10 +356,6 @@ and parse_primary tokens =
       let arms, rest'' = parse_arms rest' [] in
       if arms = [] then raise (ParseError ("match requires at least one arm", 1, 1));
       (Match (scrutinee, arms), rest'')
-  | (Ident "try", _, _) :: rest ->
-      let expr, rest' = parse_primary (skip_newlines rest) in
-      let handler, rest'' = parse_primary (skip_newlines rest') in
-      (Try (expr, handler), rest'')
   | (Ident "assert", _, _) :: rest ->
       let arg, rest' = parse_expr (skip_newlines rest) in
       (Assert arg, rest')

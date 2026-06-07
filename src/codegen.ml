@@ -90,7 +90,6 @@ let rec free_vars bound = function
   | Dict entries ->
       List.fold_left (fun s (_, v) -> StringSet.union s (free_vars bound v))
         StringSet.empty entries
-  | Try (e, h) -> StringSet.union (free_vars bound e) (free_vars bound h)
   | FunDef (name, args, body) ->
       let bound' = List.fold_left (fun s a -> StringSet.add a s)
         (StringSet.add name bound) args in
@@ -902,7 +901,6 @@ let rec compile_expr ctx md builder (known_fns : (string, Llvm.lltype * Llvm.llv
         in
         Llvm.build_call set_ft set_fn [| acc_dict; key_v; val_v |] "dict" builder
       ) null_p entries
-  | Try  _ -> failwith "codegen: try/catch not yet supported in native compile"
   | Import _ -> Llvm.const_float (Llvm.double_type ctx) 0.0  (* resolved before codegen *)
   | e -> failwith ("codegen: unsupported expression: " ^ string_of_expr e)
 
