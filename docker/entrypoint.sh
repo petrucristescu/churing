@@ -2,11 +2,10 @@
 VERSION=$(churing --version 2>/dev/null || echo "?")
 cat <<EOF
 
-  Churing $VERSION  —  a functional language (Church + Turing)
+  Churing $VERSION  —  an AI-native functional language (Church + Turing)
   ─────────────────────────────────────────────────────────────
-  Run an example:    churing examples/01_hello.ch
-  List all examples: ls examples/
-  Browse a file:     cat examples/03_functions.ch
+  Run a file:  churing path/to/file.ch
+  Docs:        https://github.com/petrucristescu/churing
 
 EOF
 exec /bin/bash "$@"

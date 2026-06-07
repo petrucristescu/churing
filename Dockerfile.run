@@ -6,7 +6,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY _build/default/src/churing.exe /usr/local/bin/churing
 COPY src/lib/                        /usr/local/lib/
-COPY examples/                       /home/churing/examples/
 COPY docker/entrypoint.sh            /entrypoint.sh
 
 RUN chmod +x /usr/local/bin/churing /entrypoint.sh \
