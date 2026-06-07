@@ -8,8 +8,8 @@
 > backend + ML stack + digits stripped from master (interpreter-only; archived on
 > `archive/native-compile-ml`). ✅ **`ask` primitive landed and proven end-to-end** — mock +
 > Ollama via curl, returns `Result`; verified against qwen2.5:0.5b (#99 closed). Test:
-> `run-tests-llm.sh` + `src/test/llm_ask.ch`. **Next (optional): type-directed structured output
-> for `ask`** (ask for a typed value with parse/validate/retry)._
+> `run-tests-llm.sh` + `src/test/llm_ask.ch`. **Next: type-directed structured output for `ask`
+> — tracked in #124** (ask for a typed value with parse/validate/retry)._
 
 ## Why this, and only this
 
