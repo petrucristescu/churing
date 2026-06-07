@@ -3,6 +3,10 @@
 > **Active direction** (2026-06-07). Epic: #122. Core primitive: #99 (`ask`).
 > Interpreter-only — the interpreter is the fast iteration vehicle for language *semantics*.
 > Working rule: after every step, update this doc + sync issues.
+>
+> _Progress (branch `feat/monadic-result-remove-try`): ✅ try/catch removed → monadic `Result`
+> (tagged rep + `safe*` + `attempt`; unit 16/16, integration 52/0). ✅ README/CLAUDE.md reflect the
+> direction. **Next: the `ask` primitive (mock backend) + structured output + test (#99).**_
 
 ## Why this, and only this
 
