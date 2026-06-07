@@ -1113,14 +1113,6 @@ let rec match_pattern (pat : Ast.pattern) (v : value) : (string * value) list op
        | None -> None)
   | _ -> None
 
-let eval_llvm intrinsic args =
-  let to_f = function
-    | VFloat f -> f | VInt n -> float_of_int n | VLong n -> Int64.to_float n
-    | _ -> raise (RuntimeError (intrinsic ^ ": expected numeric argument")) in
-  let float_args = List.map to_f args in
-  try VFloat (Codegen.call_intrinsic intrinsic float_args)
-  with Failure msg -> raise (RuntimeError ("LLVM JIT: " ^ msg))
-
 (* Define an eval_with_imports function to handle environment properly *)
 (* eval_with_imports and force are mutually recursive for tail call optimization *)
 let rec eval_with_imports env expr =
@@ -1174,9 +1166,6 @@ let rec eval_with_imports env expr =
         with RuntimeError _ -> env_with_natives
       in
       (final_env, VInt 0)
-  | Llvm (intrinsic, arg_exprs) ->
-      let args = List.map (fun e -> force (snd (eval_with_imports env e))) arg_exprs in
-      (env, eval_llvm intrinsic args)
   | Int n -> (env, VInt n)
   | Lng n -> (env, VLong n)
   | Float f -> (env, VFloat f)

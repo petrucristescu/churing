@@ -443,8 +443,6 @@ let rec infer env = function
       (s, t_result)
   | Import _ ->
       ([], TInt)
-  | Llvm _ ->
-      ([], fresh_var ())
 
 and infer_pattern pat t_scrut : subst * (string * typ) list =
   match pat with

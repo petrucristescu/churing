@@ -20,7 +20,6 @@ type expr =
   | Dict of (string * expr) list
   | Match of expr * (pattern * expr) list
   | Import of string
-  | Llvm of string * expr list
 
 and pattern =
   | PInt of int
@@ -73,8 +72,6 @@ let rec string_of_expr = function
       String.concat " " (List.map (fun (p, body) ->
         "| " ^ string_of_pattern p ^ " -> " ^ string_of_expr body) arms)
   | Import lib -> "import " ^ lib
-  | Llvm (intrinsic, args) ->
-      "(llvm \"" ^ intrinsic ^ "\" " ^ String.concat " " (List.map string_of_expr args) ^ ")"
 
 and string_of_pattern = function
   | PInt n -> string_of_int n

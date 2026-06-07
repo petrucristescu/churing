@@ -372,23 +372,6 @@ and parse_primary tokens =
            let f, rest''''' = parse_primary (skip_newlines rest'''') in
            (App (App (Eq (a, b), t), f), rest''''')
        | _ -> (Eq (a, b), rest'''))
-  | (Ident "llvm", _, _) :: (String intrinsic, _, _) :: rest ->
-      let rec collect_args toks acc =
-        match toks with
-        | (Integer _, _, _) :: _
-        | (Long _, _, _) :: _
-        | (Float _, _, _) :: _
-        | (Ident _, _, _) :: _
-        | (LParen, _, _) :: _
-        | (LBracket, _, _) :: _
-        | (LBrace, _, _) :: _
-        | (String _, _, _) :: _ ->
-            let arg, rest' = parse_primary toks in
-            collect_args rest' (arg :: acc)
-        | _ -> (List.rev acc, toks)
-      in
-      let args, rest' = collect_args rest [] in
-      (Llvm (intrinsic, args), rest')
   | (Ident x, _, _) :: rest -> (Var x, rest)
   | (LParen, _, _) :: rest ->
       let rest = skip_newlines rest in
