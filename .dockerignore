@@ -1,6 +1,5 @@
 .git
 _build
 _opam
-examples/digits/data/train
 test/
 *.opam
