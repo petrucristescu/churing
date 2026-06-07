@@ -50,7 +50,7 @@ for test_file in src/test/*.ch; do
     test_name=$(basename "$test_file" .ch)
 
     # Skip database tests (require external services)
-    case "$test_name" in *_mysql*|*_dynamo*) echo "SKIP: $test_name (requires database)"; continue;; esac
+    case "$test_name" in *_mysql*|*_dynamo*|*llm*) echo "SKIP: $test_name (external service)"; continue;; esac
 
     expected_output="src/test/${test_name}.ch.out"
 
