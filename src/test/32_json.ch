@@ -50,6 +50,6 @@ assert (eq (get deep "ok") true)
 assert (eq (get roundtrip "name") "test")
 assert (eq (get roundtrip "scores") [90, 85])
 
-# Error handling
-@bad (try (fromJson "invalid") (|>e. "parse error"))
+# Error handling — monadic (attempt)
+@bad (unwrapOr "parse error" (attempt (|>_. fromJson "invalid")))
 assert (eq bad "parse error")

@@ -30,6 +30,6 @@ assert (deleteFile test_path)
 assert (not (fileExists test_path))
 assert (deleteFile test_path2)
 
-# Error handling with try
-@result (try (readFile "/tmp/nonexistent_churing_file") (|>e. "caught"))
+# Error handling — monadic (attempt + unwrapOr)
+@result (unwrapOr "caught" (attempt (|>_. readFile "/tmp/nonexistent_churing_file")))
 assert (eq result "caught")

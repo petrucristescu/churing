@@ -5,7 +5,7 @@
 #
 # Showcases: @-bindings, named functions, lambdas, pattern matching,
 # cons/nil patterns, list/dict literals, recursion, TCO, llvm intrinsics,
-# ask, result monad, IO monad, try/catch, assert, MySQL, JSON, env vars.
+# ask, Result monad (attempt), IO monad, assert, MySQL, JSON, env vars.
 
 # ── Config ────────────────────────────────────────────────────────────
 
@@ -132,11 +132,7 @@
                     "\nWrite 3 sentences of business insight for a product manager. Be specific.")))
 )
 
-~safeAsk prompt (
-    try
-        (ok (ask prompt))
-        (|>e. err (concat "LLM unavailable: " e))
-)
+~safeAsk prompt (matchResult (attempt (|>_. ask prompt)) ok (|>e. err (concat "LLM unavailable: " e)))
 
 # ── IO pipeline — build and save report ──────────────────────────────
 
@@ -181,10 +177,9 @@
 
 # ── Entry point ───────────────────────────────────────────────────────
 
-@result (try
-    (run db orders customers)
-    (|>err.
-        merge {} {error: err}))
+@result (matchResult (attempt (|>_. run db orders customers))
+    (|>v. v)
+    (|>err. merge {} {error: err}))
 
 mysqlClose db
 

@@ -441,12 +441,6 @@ let rec infer env = function
         (compose s2 (compose s1 (compose s_pat s_acc)), apply s2 t_body)
       ) (s0, result_tv) arms in
       (s, t_result)
-  | Try (expr, handler) ->
-      let s1, t1 = infer env expr in
-      let s2, t2 = infer (apply_env s1 env) handler in
-      (* handler is String -> a, result must unify with expr type *)
-      let s3 = unify (apply s2 t2) (TFun (TString, apply s2 t1)) in
-      (compose s3 (compose s2 s1), apply s3 (apply s2 t1))
   | Import _ ->
       ([], TInt)
   | Llvm _ ->

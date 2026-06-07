@@ -999,6 +999,13 @@ let create_list_functions env =
       VPrim (fun args ->
         let l = expect_list "map" (List.hd args) in
         VList (List.map (apply_fn f) l))))
+  (* attempt: run a thunk, catching a runtime/assertion error into a Result
+     (["ok", v] / ["err", msg]). Replaces try/catch — errors become first-class
+     values, composed with matchResult. *)
+  |> StringMap.add "attempt" (VPrim (fun args ->
+      let thunk = List.hd args in
+      try VList [VString "ok"; apply_fn thunk (VInt 0)]
+      with RuntimeError msg | AssertionFailure msg -> VList [VString "err"; VString msg]))
   |> StringMap.add "filter" (VPrim (fun args ->
       let f = List.hd args in
       VPrim (fun args ->
@@ -1299,23 +1306,6 @@ let rec eval_with_imports env expr =
              | None -> try_arms rest)
       in
       try_arms arms
-  | Try (expr, handler) ->
-      (try
-        let (env', v) = eval_with_imports env expr in
-        (env', force v)
-      with
-      | RuntimeError msg ->
-          let (_, hv) = eval_with_imports env handler in
-          let hv = force hv in
-          (env, apply_fn hv (VString msg))
-      | AssertionFailure msg ->
-          let (_, hv) = eval_with_imports env handler in
-          let hv = force hv in
-          (env, apply_fn hv (VString msg))
-      | Division_by_zero ->
-          let (_, hv) = eval_with_imports env handler in
-          let hv = force hv in
-          (env, apply_fn hv (VString "Division by zero")))
 
 (* Trampoline: resolve VTailCall chains without growing the stack.
    force is tail-recursive, so OCaml optimizes it into a loop. *)

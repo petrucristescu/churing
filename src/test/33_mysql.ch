@@ -42,8 +42,8 @@ assert (eq (len after_delete) 0)
 @charlie (mysqlQuery conn "SELECT email FROM users WHERE name = 'Charlie'")
 assert (eq (get (head charlie) "email") nil)
 
-# Error handling with try
-@bad (try (mysqlQuery conn "SELECT * FROM nonexistent_table") (|>e. "caught"))
+# Error handling — monadic (attempt)
+@bad (unwrapOr "caught" (attempt (|>_. mysqlQuery conn "SELECT * FROM nonexistent_table")))
 assert (eq bad "caught")
 
 # Helper: mysqlFindOne

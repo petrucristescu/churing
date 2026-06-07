@@ -27,9 +27,7 @@ assert (eq (unwrapOr 0 doubled) 84)
 assert (isErr still_err)
 
 # bindResult — chain computations
-~safeDivide x,y (
-    try (ok (x / y)) (|>e. err e)
-)
+~safeDivide x,y (match (eq y 0) | true -> err "divide by zero" | _ -> ok (x / y))
 @chained (bindResult (|>v. safeDivide v 2) (ok 10))
 assert (eq (unwrapOr 0 chained) 5)
 
