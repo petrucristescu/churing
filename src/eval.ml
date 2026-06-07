@@ -1351,7 +1351,7 @@ let rec eval_toplevel (env : env) (expr : expr) : env * value option =
       (env, Some v)
 
 let load_prelude () =
-  let stdlib = ["operators"; "math"; "array"; "tensor"; "string"; "list"; "time"; "io"; "dict"; "json"; "mysql"; "church_list"; "result"; "vector"; "matrix"; "activations"; "loss"; "pgm"; "nn"] in
+  let stdlib = ["operators"; "math"; "string"; "list"; "time"; "io"; "dict"; "json"; "mysql"; "church_list"; "result"; "vector"; "matrix"] in
   List.fold_left (fun env lib ->
     fst (eval_with_imports env (Import lib))
   ) StringMap.empty stdlib
