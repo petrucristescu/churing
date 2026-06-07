@@ -145,105 +145,39 @@ All functions are available without imports:
 
 ## Architecture
 
-```
-                         ┌─────────────────────────────────────────────┐
-                         │              Source File (.ch)              │
-                         └─────────────────┬───────────────────────────┘
-                                           │
-                                           ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  PARSER (src/parser.ml)                                                      │
-│                                                                              │
-│  ┌──────────┐    ┌───────────┐    ┌─────────────┐    ┌─────────────────┐    │
-│  │  Lexer   │───▶│ Tokenizer │───▶│ Parse Exprs │───▶│ Parse Patterns  │    │
-│  │ char→tok │    │  tok list │    │  tok→AST    │    │ match/cons/list │    │
-│  └──────────┘    └───────────┘    └─────────────┘    └─────────────────┘    │
-│                                                                              │
-│  Tokens: Int, Float, Long, String, Ident, LParen, RParen, LBracket,        │
-│          Pipe, Arrow, Lambda, Tilde, At, Comma, Dot, Newline, ...           │
-│                                                                              │
-│  Parsing chain: parse_expr → parse_fun_def → parse_var_def → parse_add     │
-│                 → parse_app → parse_primary                                  │
-└──────────────────────────────────┬───────────────────────────────────────────┘
-                                   │ expr list
-                                   ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  AST (src/ast.ml)                                                            │
-│                                                                              │
-│  Values:    Int | Lng | Float | Str | Bool | List | Dict                    │
-│  Ops:       Add | Sub | Mul | Div | Eq                                      │
-│  Binding:   Let(name, expr) | FunDef(name, args, body)                      │
-│  Control:   Match(expr, arms) | Assert(expr)                                │
-│  Functions: Lam(param, body) | App(fn, arg) | Var(name)                     │
-│  Other:     Seq(a, b) | Import(name) | Cons(h, t)                           │
-└──────────────────────────────┬───────────────┬───────────────────────────────┘
-                               │               │
-                    ┌──────────┘               └──────────┐
-                    ▼                                      ▼
-┌────────────────────────────────────┐  ┌────────────────────────────────────┐
-│  TYPE INFERENCE (src/infer.ml)     │  │  EVALUATOR (src/eval.ml)           │
-│                                    │  │                                    │
-│  Hindley-Milner Algorithm:         │  │  Environment-based interpreter:    │
-│                                    │  │                                    │
-│  1. Assign fresh type vars         │  │  ┌──────────────────────────┐     │
-│  2. Generate constraints           │  │  │  load_prelude()          │     │
-│  3. Unify types                    │  │  │  Auto-load 17 stdlib     │     │
-│  4. Generalize to schemes          │  │  │  modules into env        │     │
-│  5. Report errors (non-fatal)      │  │  └────────────┬─────────────┘     │
-│                                    │  │               ▼                    │
-│  Types:                            │  │  ┌──────────────────────────┐     │
-│  TInt | TFloat | TLong | TString  │  │  │  eval_program(exprs)     │     │
-│  TBool | TVar(id) | TFun(a,b)    │  │  │  Fold over top-level     │     │
-│  TList(a) | TDict | TUnknown     │  │  │  exprs, thread env       │     │
-│                                    │  │  └────────────┬─────────────┘     │
-│  Type Schemes:                     │  │               ▼                    │
-│  ∀a. a → a  (polymorphism)        │  │  ┌──────────────────────────┐     │
-│                                    │  │  │  eval / eval_with_imports│     │
-└────────────────────────────────────┘  │  │                          │     │
-                                        │  │  Values:                 │     │
-  Errors are warnings only ──────────▶  │  │  VInt | VFloat | VLong  │     │
-  (program still executes)              │  │  VString | VBool         │     │
-                                        │  │  VFun | VRecFun (clos.) │     │
-                                        │  │  VList | VCons | VNil   │     │
-                                        │  │  VDict | VPrim          │     │
-                                        │  │  VTailCall (TCO)        │     │
-                                        │  └────────────┬─────────────┘     │
-                                        │               ▼                    │
-                                        │  ┌──────────────────────────┐     │
-                                        │  │  Auto-print result       │     │
-                                        │  │  (only if last form is   │     │
-                                        │  │   an expression, not     │     │
-                                        │  │   assert/def/import)     │     │
-                                        │  └──────────────────────────┘     │
-                                        └────────────────────────────────────┘
+> Interpreter-only — no compiler/backend. Source is parsed, type-inferred (non-fatal), then evaluated.
 
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  STANDARD LIBRARY (src/lib/*.ch + native OCaml primitives)                   │
-│                                                                              │
-│  Each module = native OCaml primitives registered in eval.ml                 │
-│              + Churing helpers defined in src/lib/<module>.ch                 │
-│                                                                              │
-│  ┌────────────┐ ┌────────┐ ┌────────┐ ┌──────┐ ┌──────┐ ┌──────┐          │
-│  │ operators  │ │  math  │ │ string │ │ list │ │ dict │ │ json │          │
-│  │ true false │ │ sqrt   │ │ length │ │ cons │ │ get  │ │toJson│          │
-│  │ not and or │ │ exp    │ │ split  │ │ map  │ │ set  │ │from  │          │
-│  │ if gt lt   │ │ log    │ │toFloat │ │filter│ │ keys │ │ Json │          │
-│  │ gte lte    │ │ tanh   │ │ toInt  │ │foldl │ │merge │ │      │          │
-│  │ env envOr  │ │ random │ │ join   │ │ zip  │ │      │ │      │          │
-│  └────────────┘ └────────┘ └────────┘ └──────┘ └──────┘ └──────┘          │
-│  ┌────────────┐ ┌────────┐ ┌────────┐ ┌──────┐ ┌──────┐ ┌──────┐          │
-│  │    time    │ │   io   │ │ mysql  │ │result│ │church│ │      │          │
-│  │ now timeMs │ │readFile│ │connect │ │ ok   │ │ _list│ │      │          │
-│  │ year month │ │write   │ │query   │ │ err  │ │c_cons│ │      │          │
-│  │ day hour   │ │readLine│ │exec    │ │unwrap│ │c_map │ │      │          │
-│  └────────────┘ └────────┘ └────────┘ └──────┘ └──────┘ └──────┘          │
-│  ┌────────────┐ ┌────────┐                                                 │
-│  │   vector   │ │ matrix │                                                 │
-│  │ vecAdd     │ │matVecMu│                                                 │
-│  │ vecDot     │ │ matMul │                                                 │
-│  │ argmax     │ │matTrans│                                                 │
-│  └────────────┘ └────────┘                                                 │
-└──────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    SRC["Source file (.ch)"] --> PARSER
+
+    subgraph PARSER["Parser · src/parser.ml"]
+        direction TB
+        LEX["Lexer — chars to tokens"] --> PARSE["Parse — tokens to AST"] --> PAT["Patterns — literals, wildcard, list, cons cells"]
+    end
+
+    PARSER --> AST["AST · src/ast.ml<br/>Int Lng Float Str Bool · Add Sub Mul Div Eq<br/>Var Lam App Let FunDef Seq Assert<br/>List Dict Match Import"]
+
+    AST --> INFER
+    AST --> EVAL
+
+    subgraph INFER["Type inference · src/infer.ml"]
+        direction TB
+        HM["Hindley-Milner — unify · generalize · schemes<br/>(type errors are non-fatal warnings)"]
+    end
+
+    subgraph EVAL["Evaluator · src/eval.ml"]
+        direction TB
+        PRE["load stdlib into env"] --> RUN["eval_program — thread env · VTailCall TCO trampoline · VRecFun closures"] --> OUT["auto-print last value"]
+    end
+
+    EVAL --> STDLIB
+
+    subgraph STDLIB["Standard library — auto-loaded"]
+        direction TB
+        PRIM["OCaml primitives (VPrim) in eval.ml"]
+        LIBS["Churing helpers in src/lib/*.ch<br/>operators · math · string · list · dict · json · time · io<br/>mysql · result · church_list · vector · matrix · ask (AI)"]
+    end
 ```
 
 ### Key Mechanisms
