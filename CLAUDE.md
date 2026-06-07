@@ -2,10 +2,12 @@
 
 A functional programming language named after Alonzo Church and Alan Turing, implemented in OCaml.
 
-> **Native compile work:** the current active effort is bringing `churing compile` (LLVM →
-> native binary) to full interpreter parity. The canonical resume doc — current state, the
-> ordered issue plan, and the keystone blocker (#117) — is **`docs/native-compile-roadmap.md`**.
-> Read it first when resuming this work, and update it (plus sync GitHub issues) after every step.
+> **Active direction (2026-06-07): AI-native functional language, interpreter-only.** Model
+> calls as first-class typed effects (`ask`). Canonical resume doc: **`docs/ai-native-design.md`**
+> (epic #122, seed #99). Read it first; update it + sync issues after every step.
+>
+> The earlier native-LLVM-compilation / ML / CUDA / web / AWS work is **PARKED** (no forward
+> investment) — kept in git as a learning artifact; see `docs/native-compile-roadmap.md`.
 
 ## Project Structure
 

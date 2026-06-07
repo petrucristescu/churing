@@ -1,9 +1,13 @@
-# Native Compile Roadmap — path to full interpreter parity
+# Native Compile Roadmap — PARKED (2026-06-07)
 
-> Canonical resume doc for the `churing compile` (LLVM → native binary) work.
-> Goal: native compilation reaches **full feature parity with the interpreter**.
-> Working rule: after **every** step, update this doc AND sync GitHub issues
-> (close done / comment partial / create new gaps). Don't batch to session end.
+> ⚠ **DIRECTION CHANGED.** This entire track — native LLVM compilation, the ML/tensor stack,
+> CUDA, web, AWS — is **parked**. The project pivoted to an **AI-native functional language,
+> interpreter-only**. See **`docs/ai-native-design.md`** (epic #122). The code described below
+> stays in git as a working learning artifact; there is **no forward investment** here.
+> This doc is retained as the historical record of the native-compile work (5/5 basic tests
+> pass on master; the keystone was a uniform-value rewrite, never built).
+>
+> _Below is the pre-pivot plan, kept for reference only._
 
 _Last verified: 2026-06-07._
 
