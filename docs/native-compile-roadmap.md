@@ -41,6 +41,57 @@ Full plan + rationale: the approved plan; this doc is the living tracker.
   mistyping: `getelementptr {double,ptr}, double %r`; `_ch_err(ptr)` called as `double`), while the
   interpreter runs all of them. ⇒ uniform substrate is necessary, not speculative.
 
+## ▶ RESUME HERE (saved 2026-06-07)
+
+**Status:** architecture decided + Phase 0 gate passed. **Phase 1 has NOT started — no code
+written yet.** The session that saved this was spent deciding the design + sizing the work, not
+implementing. Pick up by choosing scope (see "Recommended next step"), then code.
+
+**Locked decisions (don't re-litigate):**
+- Monadic `Result` is the error model everywhere; `try`/catch retired (#105 closed).
+- Native values become a **uniform tagged `{i64 tag, i64 payload}`** (NOT NaN-boxing — Boehm GC
+  can't trace tagged-NaN pointers). HM inference stays, repurposed as an **unboxing optimizer**.
+
+**ChValue encoding (concrete — so no re-derivation):**
+- LLVM first-class struct `{ i64 tag, i64 payload }`. Build with `insertvalue`/`extractvalue`.
+- `box_num`: bitcast f64→i64 into payload, tag=NUM. `unbox_num`: extract payload, bitcast i64→f64.
+- pointers (cons/string/dict/closure): payload = `ptrtoint`; unbox = `inttoptr`; distinct tags.
+- **OPEN sub-decision:** integers. Today native forces all numbers (incl. `Lng`) through `double`
+  → capped at ±2^53 and `Lng` is effectively broken. Choice: keep all-floats (simple, fast arith,
+  2^53 cap) **vs** a separate `TAG_INT` (full signed 64-bit, but `+`/`*` must dispatch on tag).
+  Decide when implementing; `TAG_INT` is the "correct" answer if real 64-bit ints matter.
+
+**Effort estimate (Phase 1 to green):** ~600–700 lines across `codegen.ml` + `runtime.rs`,
+~40–60 Docker build/debug cycles, ~15–30 working turns (one long session or a few). The `App`
+dispatch (~40 branches) and the ~40 `runtime.rs` primitives are the bulk; closures/env-packing is
+the subtle part. Phases 2 (HM-unboxing) and 3 (monadic migration) are each a further comparable
+chunk. **Largest effort on the project.** The tree can't stay green in small pieces (LLVM
+signatures flip all-or-nothing), so the spike branch is red until the slice lands.
+
+**Cost / speed levers (Team seat = flat fee + rolling-window limits; spread Opus work across
+windows, resume-safe):**
+1. **Re-scope first (~10×):** just enough `ChValue` for a `Result` over floats+strings
+   (~150 lines, ~8–12 cycles) → monadic error handling compiles natively for common cases; defer
+   dicts / ML stack / HM-unboxing.
+2. **Fast feedback (~3–5×/cycle):** iterate against the in-process Alcotest "valid IR" codegen
+   tests (`test/`, already 16) instead of full Docker compile+run+link; keep the Rust release build
+   warm (only rebuild `runtime.rs` when the ABI changes; `_build` cache persists via the volume
+   mount); batch many probe programs per container run.
+3. **Parallel + cheaper model for the bulk:** Opus designs the `{tag,payload}` ABI contract +
+   box/unbox helpers + ONE reference primitive & ONE reference `App` branch, then **Sonnet
+   subagents** (Agent/Workflow `model` override) apply the pattern across the ~40 prims + ~40
+   branches in parallel; Opus integrates + debugs the LLVM-verifier errors.
+
+**Recommended next step:** re-scoped float+string `Result` slice (lever 1) on the fast in-process
+loop (lever 2). Smallest path to a real working result; proves the ChValue pattern end-to-end.
+
+**Open decision for next session:** full Phase-1 rewrite now vs re-scoped slice first; and whether
+to bring in the Sonnet-subagent workflow for the mechanical bulk.
+
+**Git/branch state at save:** `master` @ 3687112 (clean, pushed). Branch `spike/uniform-tagged-value`
+has **no commits** (Phase 0 probe ran in `/tmp`) — safe to delete/recreate. Docker image
+`churing-test` is built.
+
 ## Ordered plan (epic #121)
 
 - **Phase 1 — native uniform value model + runtime ABI.** Replace the f64/ptr pre-pass
