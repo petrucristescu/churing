@@ -13,7 +13,7 @@ A functional programming language named after Alonzo Church and Alan Turing, imp
 
 - `src/churing.ml` — Entry point: parse → type-infer → evaluate
 - `src/parser.ml` — Lexer, parser, and `parse_and_infer` (type errors are non-fatal warnings)
-- `src/ast.ml` — AST: Int, Lng, Float, Str, Bool, Add, Sub, Mul, Div, Eq, Var, Lam, App, Let, FunDef, Seq, Assert, List, Dict, Match, Try, Import
+- `src/ast.ml` — AST: Int, Lng, Float, Str, Bool, Add, Sub, Mul, Div, Eq, Var, Lam, App, Let, FunDef, Seq, Assert, List, Dict, Match, Import (no Try — error handling is monadic via Result)
 - `src/eval.ml` — Evaluator: environment-based closures, VRecFun for recursion, VTailCall trampoline for TCO, VList/VCons/VNil for lists, VDict for dictionaries
 - `src/infer.ml` — Hindley-Milner type inference with unification and type schemes
 - `src/types.ml` — Type definitions (TInt, TLong, TFloat, TString, TBool, TVar, TFun, TList, TDict, TUnknown)
@@ -34,7 +34,7 @@ eq a b                       # Equality (returns boolean)
 gt a b / lt a b              # Comparison (also gte, lte)
 assert expr                  # Assertion (fails with exit 1 if false)
 match expr | pat -> body     # Pattern matching (literals, variables, wildcards, lists, cons)
-try expr (|>err. handler)    # Error handling (catches runtime errors)
+attempt (|>_. expr)          # Run expr, catch error into a Result (ok/err); compose with matchResult/unwrapOr
 [1, 2, 3]                   # List literal
 {key: "value", n: 42}       # Dict literal
 h :: t                       # Cons pattern (head :: tail destructuring)
@@ -55,7 +55,7 @@ All standard library functions are available without imports. Each library has n
 - **io**: readFile, writeFile, appendFile, fileExists, deleteFile, readLines, writeLines, pureIO, bindIO, mapIO, runIO, readFileIO, writeFileIO, appendFileIO, deleteFileIO, readLinesIO, writeLinesIO
 - **mysql**: mysqlConnect, mysqlQuery, mysqlExec, mysqlClose, mysqlFindOne, mysqlFind, mysqlQueryIO, mysqlExecIO
 - **church_list**: church_nil, church_cons, church_head, church_sum, church_map, church_fold, church_length
-- **result**: ok, err, matchResult, mapResult, bindResult, unwrapOr, isOk, isErr
+- **result**: ok, err, matchResult, mapResult, bindResult, unwrapOr, isOk, isErr, safeDiv, safeHead, safeTail, safeNth, safeGet (+ `attempt` primitive — error-to-Result)
 - **vector**: vecAdd, vecSub, vecMul, vecScale, vecDot, vecSum, vecMap, vecZipWith, vecRandom, vecZeros, vecConst, argmax
 - **matrix**: matVecMul, matCol, matTranspose, outerProduct, matAdd, matScale, matRandom, matZeros
 - **activations**: sigmoid, sigmoidDeriv, relu, reluDeriv, softmax
