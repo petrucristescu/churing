@@ -91,6 +91,7 @@ jobs:
           failed=0
           for test_file in src/test/*.ch; do
             test_name=$(basename "$test_file" .ch)
+            case "$test_name" in *llm*) echo "SKIP: $test_name (needs Ollama; run via run-tests-llm.sh)"; continue;; esac
             expected_output="src/test/${test_name}.ch.out"
 
             _build/default/src/churing.exe "$test_file" > "test_results/${test_name}.out" 2>&1
