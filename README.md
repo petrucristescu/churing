@@ -2,6 +2,8 @@
 
 A functional programming language named after [Alonzo Church](https://en.wikipedia.org/wiki/Alonzo_Church) and [Alan Turing](https://en.wikipedia.org/wiki/Alan_Turing) — the founders of computation theory. Church invented lambda calculus; Turing defined the universal machine. Churing brings both ideas together in one language.
 
+> **Direction:** Churing is evolving into an **AI-native functional language** — one where LLM/model calls are first-class, typed, composable effects (`ask`), and the type system reasons about non-determinism and structured output. Errors are values (a monadic `Result`), not exceptions. See [`docs/ai-native-design.md`](docs/ai-native-design.md).
+
 ## Quick Example
 
 ```
@@ -66,14 +68,16 @@ toJson user                         # '{"name":"Alice","age":30,"active":true}'
 get parsed "x"                      # 1
 ```
 
-### Error Handling (Two Approaches)
+### Error Handling — monadic Result (errors are values)
 ```
-# try/catch primitive
-@safe (try (readFile "missing.txt") (|>err. "default"))
+# Pure failures use safe* guards (no exceptions)
+unwrapOr 0 (safeDiv 10 0)           # 0   (safeDiv returns an err)
 
-# Church-encoded Result type
-@result (ok 42)
-unwrapOr 0 result                   # 42
+# I/O / parse failures: `attempt` catches into a Result
+@safe (unwrapOr "default" (attempt (|>_. readFile "missing.txt")))
+
+# Compose with matchResult / mapResult / bindResult
+matchResult (safeGet user "email") (|>v. v) (|>e. "no email")
 ```
 
 ### String Building
@@ -134,7 +138,7 @@ All functions are available without imports:
 | **time** | `now`, `timeMs`, `year`, `month`, `day`, `hour`, `minute`, `second`, `dayOfWeek`, `diffTime` |
 | **io** | `readFile`, `writeFile`, `appendFile`, `fileExists`, `deleteFile`, `readLines`, `writeLines`, `pureIO`, `bindIO`, `mapIO`, `runIO` |
 | **mysql** | `mysqlConnect`, `mysqlQuery`, `mysqlExec`, `mysqlClose`, `mysqlFindOne`, `mysqlFind` |
-| **result** | `ok`, `err`, `matchResult`, `mapResult`, `bindResult`, `unwrapOr`, `isOk`, `isErr` |
+| **result** | `ok`, `err`, `matchResult`, `mapResult`, `bindResult`, `unwrapOr`, `isOk`, `isErr`, `safeDiv`, `safeHead`, `safeTail`, `safeNth`, `safeGet`, `attempt` |
 | **church_list** | `church_nil`, `church_cons`, `church_head`, `church_sum`, `church_map`, `church_fold`, `church_length` |
 | **vector** | `vecAdd`, `vecSub`, `vecMul`, `vecScale`, `vecDot`, `vecSum`, `vecMap`, `vecZipWith`, `vecRandom`, `vecZeros`, `vecConst`, `argmax` |
 | **matrix** | `matVecMul`, `matCol`, `matTranspose`, `outerProduct`, `matAdd`, `matScale`, `matRandom`, `matZeros` |
@@ -173,7 +177,7 @@ All functions are available without imports:
 │  Values:    Int | Lng | Float | Str | Bool | List | Dict                    │
 │  Ops:       Add | Sub | Mul | Div | Eq                                      │
 │  Binding:   Let(name, expr) | FunDef(name, args, body)                      │
-│  Control:   Match(expr, arms) | Try(expr, handler) | Assert(expr)           │
+│  Control:   Match(expr, arms) | Assert(expr)                                │
 │  Functions: Lam(param, body) | App(fn, arg) | Var(name)                     │
 │  Other:     Seq(a, b) | Import(name) | Cons(h, t)                           │
 └──────────────────────────────┬───────────────┬───────────────────────────────┘
@@ -284,4 +288,6 @@ Every major feature offers two approaches:
 - **Native** — practical and efficient
 - **Church-encoded** — pure lambda calculus, implemented in Churing itself
 
-This lets users choose their level of abstraction: use native lists for convenience, or Church-encoded lists to stay true to lambda calculus. The language is designed to be AI-friendly — minimal syntax, pure functions, JSON support, and structured data types make it ideal for AI-generated code.
+This lets users choose their level of abstraction: native lists for convenience, or Church-encoded lists to stay true to lambda calculus.
+
+**Where it's heading.** Churing's active direction is to be *AI-native*: to make LLM/model calls first-class, typed, composable effects (`ask`), so programs that orchestrate models stay pure, type-checked, and able to reason about non-determinism and structured output. Pure functions, a monadic `Result`, JSON, and structured data are the substrate. Earlier explorations (a native LLVM compiler, an ML/tensor stack, CUDA, web, AWS) are parked — see [`docs/ai-native-design.md`](docs/ai-native-design.md).
