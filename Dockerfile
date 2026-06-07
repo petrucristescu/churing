@@ -4,16 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install dependencies (matching GitHub Actions setup)
 RUN apt-get update && \
-    apt-get install -y bubblewrap wget gcc g++ make patch unzip m4 git ca-certificates bzip2 default-mysql-client \
-        cmake lsb-release software-properties-common gnupg libgc-dev && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install LLVM 18 from official apt repo (llvm.14 conflicts with OCaml 5.x; opam llvm needs llvm-18-dev, libzstd-dev, zlib1g-dev)
-RUN wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh && \
-    chmod +x /tmp/llvm.sh && \
-    bash /tmp/llvm.sh 18 && \
-    apt-get install -y llvm-18-dev clang-18 libzstd-dev zlib1g-dev && \
-    ln -sf /usr/bin/llvm-config-18 /usr/local/bin/llvm-config && \
+    apt-get install -y bubblewrap wget gcc g++ make patch unzip m4 git ca-certificates bzip2 default-mysql-client && \
     rm -rf /var/lib/apt/lists/*
 
 # Install opam 2.1.5 (same version as CI)
@@ -29,21 +20,12 @@ RUN groupadd --system appuser && \
 USER appuser
 WORKDIR /app
 
-# Install Rust (stable) for the churing-runtime staticlib
-RUN wget -qO /tmp/rustup-init.sh https://sh.rustup.rs && \
-    chmod +x /tmp/rustup-init.sh && \
-    /tmp/rustup-init.sh -y --no-modify-path && \
-    rm /tmp/rustup-init.sh
-ENV PATH="/home/appuser/.cargo/bin:${PATH}"
-ENV CARGO_HOME=/home/appuser/.cargo
-ENV RUSTUP_HOME=/home/appuser/.rustup
-
 # Initialize opam with OCaml 5.1.1 (same as CI)
 # Set OPAMROOT explicitly so opam works even when HOME is overridden at runtime
 ENV OPAMROOT=/home/appuser/.opam
 RUN opam init --disable-sandboxing --no-setup --compiler=ocaml-base-compiler.5.1.1 -y && \
     opam update && \
-    opam install conf-llvm-shared.18 dune alcotest llvm -y && \
+    opam install dune alcotest -y && \
     chmod -R a+rX /home/appuser/.opam
 
 # Make opam root accessible to any UID (for --user overrides in run-tests.sh)
@@ -54,7 +36,6 @@ COPY <<'EOF' /usr/local/bin/run-tests-in-docker.sh
 #!/usr/bin/env bash
 set -e
 
-export PATH="/home/appuser/.cargo/bin:$PATH"
 eval "$(opam env)"
 dune build src/churing.exe
 
@@ -99,25 +80,6 @@ else
     echo "All tests passed!"
 fi
 
-echo "=== Native compilation tests ==="
-native_failed=0
-for test_file in src/test/native/*.ch; do
-    [ -f "$test_file" ] || continue
-    test_name=$(basename "$test_file" .ch)
-    binary="/tmp/native_${test_name}"
-    if ! _build/default/src/churing.exe compile "$test_file" -o "$binary" 2>&1; then
-        echo "FAIL (compile): $test_name"; native_failed=1; continue
-    fi
-    expected="src/test/native/${test_name}.ch.out"
-    if [ -f "$expected" ]; then
-        actual=$("$binary" 2>&1)
-        if [ "$actual" = "$(cat "$expected")" ]; then echo "PASS: $test_name"
-        else echo "FAIL (output): $test_name"; native_failed=1; fi
-    else
-        "$binary" && echo "PASS: $test_name" || { echo "FAIL (run): $test_name"; native_failed=1; }
-    fi
-done
-[ "$native_failed" -eq 1 ] && { echo "Some native tests failed!"; exit 1; }
 EOF
 RUN chmod +x /usr/local/bin/run-tests-in-docker.sh
 USER appuser

@@ -142,10 +142,6 @@ All functions are available without imports:
 | **church_list** | `church_nil`, `church_cons`, `church_head`, `church_sum`, `church_map`, `church_fold`, `church_length` |
 | **vector** | `vecAdd`, `vecSub`, `vecMul`, `vecScale`, `vecDot`, `vecSum`, `vecMap`, `vecZipWith`, `vecRandom`, `vecZeros`, `vecConst`, `argmax` |
 | **matrix** | `matVecMul`, `matCol`, `matTranspose`, `outerProduct`, `matAdd`, `matScale`, `matRandom`, `matZeros` |
-| **activations** | `sigmoid`, `sigmoidDeriv`, `relu`, `reluDeriv`, `softmax` |
-| **loss** | `oneHot`, `crossEntropy` |
-| **pgm** | `readPgm`, `writePgm` |
-| **nn** | `xavierScale`, `initNetwork`, `forward`, `predict`, `backward`, `updateWeights`, `trainOne`, `trainBatch` |
 
 ## Architecture
 
@@ -241,13 +237,12 @@ All functions are available without imports:
 │  │ year month │ │write   │ │query   │ │ err  │ │c_cons│ │      │          │
 │  │ day hour   │ │readLine│ │exec    │ │unwrap│ │c_map │ │      │          │
 │  └────────────┘ └────────┘ └────────┘ └──────┘ └──────┘ └──────┘          │
-│  ┌────────────┐ ┌────────┐ ┌────────────┐ ┌──────┐ ┌──────┐ ┌──────┐     │
-│  │   vector   │ │ matrix │ │ activations│ │ loss │ │  pgm │ │  nn  │     │
-│  │ vecAdd     │ │matVecMu│ │ sigmoid    │ │oneHot│ │read  │ │init  │     │
-│  │ vecDot     │ │matTrans│ │ relu       │ │cross │ │write │ │forwd │     │
-│  │ vecScale   │ │outerPr │ │ softmax    │ │Entrop│ │ Pgm  │ │backwd│     │
-│  │ argmax     │ │matAdd  │ │ derivatives│ │  y   │ │      │ │train │     │
-│  └────────────┘ └────────┘ └────────────┘ └──────┘ └──────┘ └──────┘     │
+│  ┌────────────┐ ┌────────┐                                                 │
+│  │   vector   │ │ matrix │                                                 │
+│  │ vecAdd     │ │matVecMu│                                                 │
+│  │ vecDot     │ │ matMul │                                                 │
+│  │ argmax     │ │matTrans│                                                 │
+│  └────────────┘ └────────┘                                                 │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 

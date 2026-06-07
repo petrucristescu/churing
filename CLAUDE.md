@@ -58,10 +58,6 @@ All standard library functions are available without imports. Each library has n
 - **result**: ok, err, matchResult, mapResult, bindResult, unwrapOr, isOk, isErr, safeDiv, safeHead, safeTail, safeNth, safeGet (+ `attempt` primitive — error-to-Result)
 - **vector**: vecAdd, vecSub, vecMul, vecScale, vecDot, vecSum, vecMap, vecZipWith, vecRandom, vecZeros, vecConst, argmax
 - **matrix**: matVecMul, matCol, matTranspose, outerProduct, matAdd, matScale, matRandom, matZeros
-- **activations**: sigmoid, sigmoidDeriv, relu, reluDeriv, softmax
-- **loss**: oneHot, crossEntropy
-- **pgm**: readPgm, writePgm
-- **nn**: xavierScale, initNetwork, forward, predict, backward, updateWeights, trainOne, trainBatch
 
 ## Build & Test
 
@@ -86,14 +82,6 @@ Database tests require running services and are separate from regular tests:
 This closely replicates the GitHub Actions CI (ubuntu:22.04, opam 2.1.5, OCaml 5.1.1, dune >= 3.8).
 
 The script mounts the local source as a volume, so file changes are picked up without rebuilding the image.
-
-## Project Structure (continued)
-
-- `examples/digits/` — Neural network digit recognition proof of concept
-  - `generate_data.ch` — Generate synthetic 32x32 PGM training images
-  - `train.ch` — Train the network, save weights as JSON
-  - `predict.ch` — Classify a PGM image using trained weights
-  - `test/` — Tests for NN libraries
 
 ## Testing Conventions
 
