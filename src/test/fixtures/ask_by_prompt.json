@@ -1,0 +1,5 @@
+{
+  "Capital of France?": "Paris",
+  "Retry me": ["not json", "{\"label\": \"neg\"}"],
+  "*": "fallback"
+}

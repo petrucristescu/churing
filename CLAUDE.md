@@ -4,7 +4,9 @@ A functional programming language named after Alonzo Church and Alan Turing, imp
 
 > **Active direction (2026-06-07): AI-native functional language, interpreter-only.** Model
 > calls as first-class typed effects (`ask`). Canonical resume doc: **`docs/ai-native-design.md`**
-> (epic #122, seed #99). Read it first; update it + sync issues after every step.
+> — section **Roadmap & resume** (epic #126). Read it first; update it + sync issues after every step.
+> Work one step issue per session, one branch + PR per issue; CI on the PR is the test runner
+> (no local OCaml/Docker needed). The user may switch machines: always push before stopping.
 >
 > The earlier native-LLVM-compilation / ML / CUDA / web / AWS work is **PARKED** (no forward
 > investment) — kept in git as a learning artifact; see `docs/native-compile-roadmap.md`.
@@ -40,6 +42,10 @@ attempt (|>_. expr)          # Run expr, catch error into a Result (ok/err); com
 h :: t                       # Cons pattern (head :: tail destructuring)
 import "lib"                 # Import custom library (stdlib is auto-loaded)
 ```
+
+Newlines: inside `( ... )` an application continues onto following lines; at top level a
+newline ends it. `~f x (` + newline starts a statement-per-line body; `~f x (expr ...` on the
+same line is a single (possibly multi-line) expression.
 
 ## Standard Library (auto-loaded)
 
@@ -86,6 +92,8 @@ The script mounts the local source as a volume, so file changes are picked up wi
 ## Testing Conventions
 
 - Assert-based tests: `src/test/NN_name.ch` with `assert` statements (primary approach, no trailing `true` needed)
+- Env sidecar: optional `src/test/NN_name.ch.env` (KEY=value lines) is passed as env vars by CI, the Docker runner and run-tests.sh. Used by the offline `ask` tests (61-64), fixtures in `src/test/fixtures/`.
+- `churing` exits 1 on parse errors (until 2026-11-21 it exited 0, so broken tests passed silently).
 - Output-based tests: `src/test/NN_name.ch` with expected output in `src/test/NN_name.ch.out` (for testing last-value output)
 - Database tests: `src/test/NN_mysql.ch` — skipped in regular runs, use `run-tests-db.sh`
 - OCaml unit tests: `test/test_parser.ml`, `test/test_eval.ml`, `test/test_infer.ml`

@@ -54,8 +54,15 @@ for test_file in src/test/*.ch; do
 
     expected_output="src/test/${test_name}.ch.out"
 
-    _build/default/src/churing.exe "$test_file" > "test_results/${test_name}.out" 2>&1
+    # Optional NAME.ch.env sidecar: KEY=value lines passed to the test as env vars
+    test_env=""
+    if [ -f "src/test/${test_name}.ch.env" ]; then
+        test_env=$(grep -v '^ *#' "src/test/${test_name}.ch.env" | tr -d '\r' | tr '\n' ' ')
+    fi
+    set +e
+    env $test_env _build/default/src/churing.exe "$test_file" > "test_results/${test_name}.out" 2>&1
     exit_code=$?
+    set -e
 
     if [ -f "$expected_output" ]; then
         if ! diff -u "test_results/${test_name}.out" "$expected_output"; then

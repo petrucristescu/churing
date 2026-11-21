@@ -20,6 +20,22 @@ let test_string () =
   | [Ast.Str "hello"] -> ()
   | _ -> Alcotest.fail "expected Str hello"
 
+let test_string_escapes () =
+  (* Churing source:  "say \"hi\"\n\tback\\slash" *)
+  match parse {|"say \"hi\"\n\tback\\slash"|} with
+  | [Ast.Str "say \"hi\"\n\tback\\slash"] -> ()
+  | _ -> Alcotest.fail "expected escapes to be decoded"
+
+let test_multiline_app_in_parens () =
+  match parse "(f a\n  b)" with
+  | [Ast.App (Ast.App (Ast.Var "f", Ast.Var "a"), Ast.Var "b")] -> ()
+  | _ -> Alcotest.fail "expected f a b as one application"
+
+let test_newline_ends_toplevel_app () =
+  match parse "f a\nb" with
+  | [Ast.App (Ast.Var "f", Ast.Var "a"); Ast.Var "b"] -> ()
+  | _ -> Alcotest.fail "expected two top-level expressions"
+
 let test_bool_true () =
   match parse "true" with
   | [Ast.Bool true] -> ()
@@ -87,6 +103,9 @@ let () =
       Alcotest.test_case "long" `Quick test_long;
       Alcotest.test_case "float" `Quick test_float;
       Alcotest.test_case "string" `Quick test_string;
+      Alcotest.test_case "string escapes" `Quick test_string_escapes;
+      Alcotest.test_case "multi-line app in parens" `Quick test_multiline_app_in_parens;
+      Alcotest.test_case "newline ends top-level app" `Quick test_newline_ends_toplevel_app;
       Alcotest.test_case "bool true" `Quick test_bool_true;
       Alcotest.test_case "bool false" `Quick test_bool_false;
     ];

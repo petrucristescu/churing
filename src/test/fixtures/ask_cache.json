@@ -1,0 +1,6 @@
+[
+  {"model": "test-model", "prompt": "Say hi", "response": "hi"},
+  {"model": "test-model", "prompt": "Classify: great!", "response": "garbage"},
+  {"model": "test-model", "prompt": "Classify: great!", "response": "{\"label\": \"pos\"}"},
+  {"model": "other-model", "prompt": "Say hi", "response": "hello from another model"}
+]

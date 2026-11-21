@@ -17,7 +17,9 @@ else
     expected=\"src/test/\${test_name}.ch.out\" &&
     output_file=\"test_results/\${test_name}.out\" &&
     if [ ! -f \"\$test_file\" ]; then echo \"Test not found: \$test_file\"; exit 1; fi &&
-    _build/default/src/churing.exe \"\$test_file\" > \"\$output_file\" 2>&1
+    test_env=\"\" &&
+    if [ -f \"src/test/\${test_name}.ch.env\" ]; then test_env=\$(grep -v '^ *#' \"src/test/\${test_name}.ch.env\" | tr -d '\\r' | tr '\\n' ' '); fi &&
+    env \$test_env _build/default/src/churing.exe \"\$test_file\" > \"\$output_file\" 2>&1
     exit_code=\$?
     echo '--- Output ---' &&
     cat \"\$output_file\" &&

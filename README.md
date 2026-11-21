@@ -80,6 +80,30 @@ unwrapOr 0 (safeDiv 10 0)           # 0   (safeDiv returns an err)
 matchResult (safeGet user "email") (|>v. v) (|>e. "no email")
 ```
 
+### Asking a Model (`ask`)
+```
+@r (ask "Summarize in one word: \"great product, fast shipping\"")
+matchResult r (|>text. text) (|>e. str ["failed: ", e])
+```
+`ask` sends a prompt to a model and returns a `Result`: `ok text`, or `err msg` when the
+call fails. It never throws. The backend is chosen with environment variables:
+
+| Variable | Effect |
+|---|---|
+| `OLLAMA_HOST`, `OLLAMA_MODEL` | Real model via [Ollama](https://ollama.com) (default `http://localhost:11434`, `qwen2.5:0.5b`) |
+| `CHURING_ASK_MOCK=text` | Every call returns `ok text` |
+| `CHURING_ASK_MOCK_FILE=answers.json` | Scripted answers: a JSON list (returned in call order) or an object `{"prompt": answer, "*": fallback}`, where a list value gives successive answers for repeated calls. An answer `{"error": "msg"}` becomes `err msg`. |
+| `CHURING_ASK_CACHE=cache.json` | Record/replay cache around the backend |
+| `CHURING_ASK_MODE` | `auto` (default: replay hits, record misses), `replay` (offline; a miss is `err`), `record` (fresh file), `off` |
+
+Record once against a real model, commit the cache, and the same program then runs
+offline and deterministically in CI:
+```bash
+CHURING_ASK_CACHE=answers.json CHURING_ASK_MODE=record churing classify.ch   # needs Ollama
+CHURING_ASK_CACHE=answers.json CHURING_ASK_MODE=replay churing classify.ch   # offline
+```
+The n-th identical prompt replays the n-th recorded answer, so retry loops replay faithfully.
+
 ### String Building
 ```
 @name "Alice"
@@ -105,10 +129,12 @@ get (head users) "name"             # "Alice"
 
 ### Expressions
 - Numeric literals: integers (`123`), longs (`123L`), floats (`3.14`, `.5`, `123f`)
-- String literals (`"hello"`)
+- String literals (`"hello"`), with escapes `\"`, `\\`, `\n`, `\t`, `\r`
 - Boolean literals (`true`, `false`)
 - Lambda functions (`|>x. body`)
-- Curried function application
+- Curried function application. Inside `( ... )` an application may continue on the next
+  lines (`(bindIO action` / `    (|>x. next x))`); at top level a newline ends the expression.
+  A function body that starts on a new line after `(` is a sequence of statements, one per line.
 - Arithmetic (`+`, `-`, `*`, `/`) with proper precedence
 - Equality (`eq`) and comparison (`gt`, `lt`, `gte`, `lte`)
 - Assertions (`assert`)
