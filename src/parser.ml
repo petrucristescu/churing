@@ -156,7 +156,7 @@ let tokenize s =
     else if s.[i] = '.' then
       aux (i+1) line (col+1) ((Dot, line, col) :: acc)
     else if s.[i] = '"' then
-      (* String literal with escapes: \" \\ \n \t \r. Unknown escapes are kept as-is. *)
+      (* String literal with escapes: backslash + quote, backslash, n, t, r. Unknown escapes are kept as-is. *)
       let n = String.length s in
       let buf = Buffer.create 16 in
       let rec scan j =
