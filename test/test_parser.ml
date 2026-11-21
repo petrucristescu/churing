@@ -20,6 +20,12 @@ let test_string () =
   | [Ast.Str "hello"] -> ()
   | _ -> Alcotest.fail "expected Str hello"
 
+let test_string_escapes () =
+  (* Churing source:  "say \"hi\"\n\tback\\slash" *)
+  match parse {|"say \"hi\"\n\tback\\slash"|} with
+  | [Ast.Str "say \"hi\"\n\tback\\slash"] -> ()
+  | _ -> Alcotest.fail "expected escapes to be decoded"
+
 let test_bool_true () =
   match parse "true" with
   | [Ast.Bool true] -> ()
@@ -87,6 +93,7 @@ let () =
       Alcotest.test_case "long" `Quick test_long;
       Alcotest.test_case "float" `Quick test_float;
       Alcotest.test_case "string" `Quick test_string;
+      Alcotest.test_case "string escapes" `Quick test_string_escapes;
       Alcotest.test_case "bool true" `Quick test_bool_true;
       Alcotest.test_case "bool false" `Quick test_bool_false;
     ];

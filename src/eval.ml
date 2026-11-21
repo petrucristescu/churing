@@ -507,6 +507,8 @@ let rec value_to_json = function
       | '\\' -> "\\\\"
       | '\n' -> "\\n"
       | '\t' -> "\\t"
+      | '\r' -> "\\r"
+      | c when Char.code c < 0x20 -> Printf.sprintf "\\u%04x" (Char.code c)
       | c -> String.make 1 c
     ) (List.init (String.length s) (String.get s))) ^ "\""
   | VBool true -> "true"
@@ -542,9 +544,21 @@ let json_to_value s =
        | '\\' -> Buffer.add_char buf '\\'
        | 'n' -> Buffer.add_char buf '\n'
        | 't' -> Buffer.add_char buf '\t'
+       | 'r' -> Buffer.add_char buf '\r'
+       | 'b' -> Buffer.add_char buf '\b'
+       | 'f' -> Buffer.add_char buf '\012'
        | '/' -> Buffer.add_char buf '/'
+       | 'u' when i+5 < len ->
+           (* \uXXXX -> UTF-8 (BMP only; surrogate halves become U+FFFD) *)
+           (match int_of_string_opt ("0x" ^ String.sub s (i+2) 4) with
+            | Some cp ->
+                Buffer.add_utf_8_uchar buf
+                  (if cp >= 0xD800 && cp <= 0xDFFF then Uchar.rep else Uchar.of_int cp)
+            | None -> Buffer.add_string buf (String.sub s i 6))
        | c -> Buffer.add_char buf '\\'; Buffer.add_char buf c);
-      parse_string (i+2) buf)
+      let step = if s.[i+1] = 'u' && i+5 < len
+                    && int_of_string_opt ("0x" ^ String.sub s (i+2) 4) <> None then 6 else 2 in
+      parse_string (i+step) buf)
     else (Buffer.add_char buf s.[i]; parse_string (i+1) buf)
   and parse_number i =
     let j = ref i in
@@ -596,9 +610,24 @@ let create_json_functions env =
       | _ -> raise (RuntimeError "fromJson: expected string")))
 
 (* AI — `ask` calls an LLM and returns a Result (["ok", text] / ["err", msg]).
-   Backend: a deterministic mock via CHURING_ASK_MOCK (offline/reproducible), else
-   Ollama via curl (OLLAMA_HOST default http://localhost:11434,
-   OLLAMA_MODEL default qwen2.5:0.5b). *)
+
+   Backends, first match wins:
+   1. CHURING_ASK_MOCK=<text>       every call returns ok <text> (no cache).
+   2. CHURING_ASK_MOCK_FILE=<path>  scripted answers from a JSON file:
+        - a list   ["a", "b", ...]          answers returned in call order; err when used up
+        - an object {"<prompt>": "a", "*": ...}  answer per exact prompt, "*" = fallback;
+          a list value gives successive answers for repeated calls (last one repeats).
+        An answer that is {"error": "msg"} becomes err msg; any other non-string
+        answer is returned as its JSON text (handy for structured-output tests).
+   3. Ollama via curl (OLLAMA_HOST default http://localhost:11434,
+      OLLAMA_MODEL default qwen2.5:0.5b).
+
+   Record/replay cache (wraps backends 2 and 3): CHURING_ASK_CACHE=<file.json> and
+   CHURING_ASK_MODE = auto (default: replay hits, call + record misses) | replay (offline,
+   miss = err) | record (start a fresh file, record every answer) | off.
+   The cache is a JSON list of {"model", "prompt", "response"}; the n-th identical
+   (model, prompt) call gets the n-th recorded answer, so retries replay faithfully.
+   Only ok answers are recorded. *)
 let create_ai_functions env =
   let read_all ic =
     let buf = Buffer.create 256 in
@@ -606,9 +635,135 @@ let create_ai_functions env =
      with End_of_file -> ());
     Buffer.contents buf
   in
+  let read_file path =
+    let ic = open_in_bin path in
+    let s = really_input_string ic (in_channel_length ic) in
+    close_in ic; s
+  in
   let ok_v v   = VList [VString "ok"; v] in
   let err_v m  = VList [VString "err"; VString m] in
   let getenv k d = match Sys.getenv_opt k with Some s when s <> "" -> s | _ -> d in
+  let current_model () = getenv "OLLAMA_MODEL" "qwen2.5:0.5b" in
+
+  (* --- Backend: Ollama --- *)
+  let ollama prompt =
+    let host  = getenv "OLLAMA_HOST" "http://localhost:11434" in
+    let body  = value_to_json (VDict [
+      ("model", VString (current_model ())); ("prompt", VString prompt); ("stream", VBool false)]) in
+    let cmd = Printf.sprintf "curl -s %s -d %s"
+      (Filename.quote (host ^ "/api/generate")) (Filename.quote body) in
+    (try
+      let ic = Unix.open_process_in cmd in
+      let output = read_all ic in
+      (match Unix.close_process_in ic with
+       | Unix.WEXITED 0 ->
+           (try
+              match json_to_value output with
+              | VDict kvs ->
+                  (match List.assoc_opt "response" kvs with
+                   | Some (VString r) -> ok_v (VString r)
+                   | _ -> err_v "ask: model output missing 'response' field")
+              | _ -> err_v "ask: unexpected model output"
+            with _ -> err_v ("ask: could not parse model output: " ^ String.trim output))
+       | _ -> err_v "ask: request failed (is Ollama running?)")
+     with e -> err_v ("ask: " ^ Printexc.to_string e))
+  in
+
+  (* --- Backend: scripted mock file --- *)
+  let mock_data = lazy (match Sys.getenv_opt "CHURING_ASK_MOCK_FILE" with
+    | Some p when p <> "" -> Some (json_to_value (read_file p))
+    | _ -> None) in
+  let mock_seq_pos = ref 0 in
+  let mock_key_pos : (string, int) Hashtbl.t = Hashtbl.create 8 in
+  let answer_of_value = function
+    | VString s -> ok_v (VString s)
+    | VDict kvs when List.mem_assoc "error" kvs ->
+        (match List.assoc "error" kvs with
+         | VString m -> err_v m
+         | v -> err_v (value_to_json v))
+    | v -> ok_v (VString (value_to_json v))
+  in
+  let mock_answer prompt =
+    match Lazy.force mock_data with
+    | None -> None
+    | Some (VList answers) ->
+        let i = !mock_seq_pos in
+        incr mock_seq_pos;
+        if i < List.length answers then Some (answer_of_value (List.nth answers i))
+        else Some (err_v (Printf.sprintf "ask mock: no scripted answer #%d" (i + 1)))
+    | Some (VDict kvs) ->
+        let pick key =
+          match List.assoc key kvs with
+          | VList [] -> err_v "ask mock: empty answer list"
+          | VList answers ->
+              let i = try Hashtbl.find mock_key_pos key with Not_found -> 0 in
+              Hashtbl.replace mock_key_pos key (i + 1);
+              answer_of_value (List.nth answers (min i (List.length answers - 1)))
+          | v -> answer_of_value v
+        in
+        if List.mem_assoc prompt kvs then Some (pick prompt)
+        else if List.mem_assoc "*" kvs then Some (pick "*")
+        else Some (err_v ("ask mock: no scripted answer for prompt: " ^ prompt))
+    | Some _ -> Some (err_v "ask mock: CHURING_ASK_MOCK_FILE must hold a JSON list or object")
+  in
+  let backend prompt =
+    match mock_answer prompt with Some r -> r | None -> ollama prompt in
+
+  (* --- Record/replay cache --- *)
+  let cache_path = getenv "CHURING_ASK_CACHE" "" in
+  let cache_mode = getenv "CHURING_ASK_MODE" "auto" in
+  let cache_entries : (string * string * string) list ref = ref [] in
+  let cache_loaded = ref false in
+  let replay_pos : (string, int) Hashtbl.t = Hashtbl.create 8 in
+  let load_cache () =
+    if not !cache_loaded then begin
+      cache_loaded := true;
+      if cache_mode <> "record" && Sys.file_exists cache_path then
+        match json_to_value (read_file cache_path) with
+        | VList es ->
+            cache_entries := List.filter_map (function
+              | VDict kvs ->
+                  (match List.assoc_opt "model" kvs, List.assoc_opt "prompt" kvs,
+                         List.assoc_opt "response" kvs with
+                   | Some (VString m), Some (VString p), Some (VString r) -> Some (m, p, r)
+                   | _ -> None)
+              | _ -> None) es
+        | _ -> raise (RuntimeError ("ask cache: " ^ cache_path ^ " must hold a JSON list"))
+    end
+  in
+  let save_cache () =
+    let oc = open_out_bin cache_path in
+    output_string oc "[\n";
+    output_string oc (String.concat ",\n" (List.map (fun (m, p, r) ->
+      "  " ^ value_to_json (VDict [
+        ("model", VString m); ("prompt", VString p); ("response", VString r)]))
+      !cache_entries));
+    output_string oc "\n]\n";
+    close_out oc
+  in
+  let next_pos key =
+    let i = try Hashtbl.find replay_pos key with Not_found -> 0 in
+    Hashtbl.replace replay_pos key (i + 1); i
+  in
+  let cached_ask prompt =
+    load_cache ();
+    let model = current_model () in
+    let hits = List.filter_map (fun (m, p, r) ->
+      if m = model && p = prompt then Some r else None) !cache_entries in
+    let i = next_pos (model ^ "\000" ^ prompt) in
+    if cache_mode <> "record" && i < List.length hits then ok_v (VString (List.nth hits i))
+    else if cache_mode = "replay" then
+      err_v ("ask: no cached answer (replay mode) for prompt: " ^ prompt)
+    else begin
+      let r = backend prompt in
+      (match r with
+       | VList [VString "ok"; VString text] ->
+           cache_entries := !cache_entries @ [(model, prompt, text)];
+           save_cache ()
+       | _ -> ());
+      r
+    end
+  in
   env
   |> StringMap.add "ask" (VPrim (fun args ->
       let prompt = match List.hd args with
@@ -617,27 +772,10 @@ let create_ai_functions env =
       match Sys.getenv_opt "CHURING_ASK_MOCK" with
       | Some canned -> ok_v (VString canned)
       | None ->
-          let host  = getenv "OLLAMA_HOST" "http://localhost:11434" in
-          let model = getenv "OLLAMA_MODEL" "qwen2.5:0.5b" in
-          let body  = value_to_json (VDict [
-            ("model", VString model); ("prompt", VString prompt); ("stream", VBool false)]) in
-          let cmd = Printf.sprintf "curl -s %s -d %s"
-            (Filename.quote (host ^ "/api/generate")) (Filename.quote body) in
-          (try
-            let ic = Unix.open_process_in cmd in
-            let output = read_all ic in
-            (match Unix.close_process_in ic with
-             | Unix.WEXITED 0 ->
-                 (try
-                    match json_to_value output with
-                    | VDict kvs ->
-                        (match List.assoc_opt "response" kvs with
-                         | Some (VString r) -> ok_v (VString r)
-                         | _ -> err_v "ask: model output missing 'response' field")
-                    | _ -> err_v "ask: unexpected model output"
-                  with _ -> err_v ("ask: could not parse model output: " ^ String.trim output))
-             | _ -> err_v "ask: request failed (is Ollama running?)")
-           with e -> err_v ("ask: " ^ Printexc.to_string e))))
+          if cache_path = "" || cache_mode = "off" then backend prompt
+          else if List.mem cache_mode ["auto"; "replay"; "record"] then cached_ask prompt
+          else err_v ("ask: unknown CHURING_ASK_MODE '" ^ cache_mode
+                      ^ "' (use auto, replay, record or off)")))
 
 (* MySQL driver — shells out to mysql CLI *)
 let create_mysql_functions env =

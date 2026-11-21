@@ -1,5 +1,47 @@
 # Churing — AI-Native Functional Language (design note)
 
+## ▶ Roadmap & resume (read this first — updated 2026-11-21)
+
+**Current experiment:** epic **#126** — one typed ticket-classifier demo, go/no-go.
+Work in small steps, one issue per session, one branch + PR per issue. CI (GitHub Actions)
+builds and runs all tests on every PR, so no local OCaml/Docker is required.
+
+| Step | Issue | Status | Branch |
+|---|---|---|---|
+| S1 `ask` scripted mock + record/replay | #127 | **PR open — check CI** | `feat/127-ask-replay` |
+| S2 record types + annotations | #128 | todo | |
+| S3 tagged unions + real `Result`/`Option` + strict mode | #129 | todo | |
+| S4 `askAs T` — structured output, validate, retry | #124 | todo | |
+| S5 `ask` options + OpenAI-compatible backend + usage | #130 | todo | |
+| S6 `eval … expect` | #131 | todo | |
+| S7 demo + Python/Instructor control + verdict | #132 | todo | |
+
+Later, only after the verdict (label `later`): #133 effect tracking · #134 sampling/vote ·
+#135 tool use · #136 `Untrusted` model output · #137 conventional syntax, JSON errors,
+MCP server for Churing · #125 intent spec (paused; its `docs/intent-spec-direction.md`
+was never committed).
+
+**How to resume on any machine:** `git clone`, `gh issue view 126`, check this table, open
+the branch of the step in progress (or start the next one from `master`). Push → open a PR →
+CI is the test runner. Update this table + tick the epic checkbox when a step merges.
+
+### S1 notes (2026-11-21)
+Done on the branch: `CHURING_ASK_MOCK_FILE` (scripted answers), `CHURING_ASK_CACHE` +
+`CHURING_ASK_MODE` (record/replay), string escapes in the lexer, JSON `\r` and `\uXXXX`,
+`.ch.env` test sidecars, and parse errors now exit 1. That last fix can expose old tests that
+were silently broken (`32_json` never parsed before string escapes existed): fix whatever CI
+reports before merging.
+
+### Gaps found in the 2026-11-21 analysis (why the steps are in this order)
+- **Type system can't express the AI features.** `TDict` is homogeneous (no records), `Result`
+  is the untyped list `["ok", v]`, `ask` is typed `String -> 'a` (unsound), type errors are
+  only warnings, and there is no annotation syntax → S2, S3 must precede `askAs` (S4).
+- **No effect tracking** — `ask`/`readFile`/`mysqlExec` are callable anywhere → #133.
+- **`ask` is minimal** — one backend (Ollama via curl), no options/usage; the mock is a single
+  string, so retries can't be tested → S1 first (makes every later step testable offline), S5.
+- **Thesis points 3 (distributions) and 4 (eval)** not started → S6 now, #134 later.
+- **AI writability** (the other half of "AI-native"): sigil syntax, human-only error text → #137.
+
 > **Active direction** (2026-06-07). Epic: #122. Core primitive: #99 (`ask`).
 > Interpreter-only — the interpreter is the fast iteration vehicle for language *semantics*.
 > Working rule: after every step, update this doc + sync issues.
@@ -8,8 +50,7 @@
 > backend + ML stack + digits stripped from master (interpreter-only; archived on
 > `archive/native-compile-ml`). ✅ **`ask` primitive landed and proven end-to-end** — mock +
 > Ollama via curl, returns `Result`; verified against qwen2.5:0.5b (#99 closed). Test:
-> `run-tests-llm.sh` + `src/test/llm_ask.ch`. **Next: type-directed structured output for `ask`
-> — tracked in #124** (ask for a typed value with parse/validate/retry)._
+> `run-tests-llm.sh` + `src/test/llm_ask.ch`. **Next: see "Roadmap & resume" above (epic #126).**_
 
 ## Why this, and only this
 

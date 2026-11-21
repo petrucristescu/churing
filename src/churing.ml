@@ -39,4 +39,5 @@ let () =
           Printf.eprintf "Churing Error: %s\n" msg;
           exit 1
         | Parser.ParseError (msg, line, col) ->
-          Printf.eprintf "Parse error at line %d, col %d: %s\n" line col msg
+          Printf.eprintf "Parse error at line %d, col %d: %s\n" line col msg;
+          exit 1

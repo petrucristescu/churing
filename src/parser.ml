@@ -156,13 +156,26 @@ let tokenize s =
     else if s.[i] = '.' then
       aux (i+1) line (col+1) ((Dot, line, col) :: acc)
     else if s.[i] = '"' then
-      let j = ref (i+1) in
-      while !j < String.length s && s.[!j] <> '"' do incr j done;
-      if !j >= String.length s then
-        raise (ParseError ("Unterminated string literal", line, col))
-      else
-        let str = String.sub s (i+1) (!j - i - 1) in
-        aux (!j+1) line (col + (!j - i + 1)) ((String str, line, col) :: acc)
+      (* String literal with escapes: \" \\ \n \t \r. Unknown escapes are kept as-is. *)
+      let n = String.length s in
+      let buf = Buffer.create 16 in
+      let rec scan j =
+        if j >= n then raise (ParseError ("Unterminated string literal", line, col))
+        else match s.[j] with
+          | '"' -> j
+          | '\\' when j + 1 < n ->
+              (match s.[j+1] with
+               | 'n' -> Buffer.add_char buf '\n'
+               | 't' -> Buffer.add_char buf '\t'
+               | 'r' -> Buffer.add_char buf '\r'
+               | '"' -> Buffer.add_char buf '"'
+               | '\\' -> Buffer.add_char buf '\\'
+               | c -> Buffer.add_char buf '\\'; Buffer.add_char buf c);
+              scan (j + 2)
+          | c -> Buffer.add_char buf c; scan (j + 1)
+      in
+      let j = scan (i+1) in
+      aux (j+1) line (col + (j - i + 1)) ((String (Buffer.contents buf), line, col) :: acc)
     else
       raise (ParseError ("Unknown char: " ^ String.make 1 s.[i], line, col))
   in
