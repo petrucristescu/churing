@@ -43,6 +43,10 @@ h :: t                       # Cons pattern (head :: tail destructuring)
 import "lib"                 # Import custom library (stdlib is auto-loaded)
 ```
 
+Newlines: inside `( ... )` an application continues onto following lines; at top level a
+newline ends it. `~f x (` + newline starts a statement-per-line body; `~f x (expr ...` on the
+same line is a single (possibly multi-line) expression.
+
 ## Standard Library (auto-loaded)
 
 All standard library functions are available without imports. Each library has native primitives (OCaml) plus Churing-level helpers in `src/lib/*.ch`.

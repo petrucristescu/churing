@@ -181,6 +181,9 @@ let tokenize s =
   in
   aux 0 1 1 []
 
+(* How many parentheses we are inside while parsing; see parse_app. *)
+let paren_depth = ref 0
+
 (* Helper function for skipping newline tokens *)
 let rec skip_newlines = function
   | (Newline, _, _) :: rest -> skip_newlines rest
@@ -249,7 +252,12 @@ and parse_fun_def tokens =
       let args, rest' = parse_args rest [] in
       let body, rest'' =
         match rest' with
-        | (LParen, _, _) :: rest'' -> parse_seq rest''
+        | (LParen, _, _) :: ((Newline, _, _) :: _ as rest'') -> parse_seq rest''
+        | (LParen, _, _) :: rest'' ->
+            (* Body starts on the same line as "(": it is one expression that may
+               continue over several lines, like any parenthesised expression. *)
+            incr paren_depth;
+            Fun.protect ~finally:(fun () -> decr paren_depth) (fun () -> parse_seq rest'')
         | _ -> parse_add rest'
       in
       (FunDef (name, args, body), rest'')
@@ -313,6 +321,16 @@ and parse_mul tokens =
 
 and parse_app tokens =
   let rec aux acc toks =
+    (* Inside ( ... ), an application continues on the next line when that line starts
+       with another argument; at top level a newline ends the expression. *)
+    let toks =
+      if !paren_depth > 0 then
+        match skip_newlines toks with
+        | ((Integer _ | Long _ | Float _ | Ident _ | LParen | LBracket | LBrace | String _), _, _) :: _
+          as next -> next
+        | _ -> toks
+      else toks
+    in
     match toks with
     | (Integer _, _, _) :: _
     | (Long _, _, _) :: _
@@ -388,7 +406,9 @@ and parse_primary tokens =
   | (Ident x, _, _) :: rest -> (Var x, rest)
   | (LParen, _, _) :: rest ->
       let rest = skip_newlines rest in
-      let expr, rest' = parse_expr rest in
+      incr paren_depth;
+      let expr, rest' =
+        Fun.protect ~finally:(fun () -> decr paren_depth) (fun () -> parse_expr rest) in
       let rest' = skip_newlines rest' in
       (match rest' with
        | (RParen, _, _) :: rest'' -> (expr, rest'')
@@ -448,6 +468,7 @@ let rec parse_all tokens acc =
       parse_all rest (expr :: acc)
 
 let parse input =
+  paren_depth := 0;
   let tokens =
     try tokenize input
     with ParseError (msg, line, col) ->

@@ -132,7 +132,9 @@ get (head users) "name"             # "Alice"
 - String literals (`"hello"`), with escapes `\"`, `\\`, `\n`, `\t`, `\r`
 - Boolean literals (`true`, `false`)
 - Lambda functions (`|>x. body`)
-- Curried function application
+- Curried function application. Inside `( ... )` an application may continue on the next
+  lines (`(bindIO action` / `    (|>x. next x))`); at top level a newline ends the expression.
+  A function body that starts on a new line after `(` is a sequence of statements, one per line.
 - Arithmetic (`+`, `-`, `*`, `/`) with proper precedence
 - Equality (`eq`) and comparison (`gt`, `lt`, `gte`, `lte`)
 - Assertions (`assert`)
