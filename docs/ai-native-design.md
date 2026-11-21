@@ -8,7 +8,7 @@ builds and runs all tests on every PR, so no local OCaml/Docker is required.
 
 | Step | Issue | Status | Branch |
 |---|---|---|---|
-| S1 `ask` scripted mock + record/replay | #127 | **PR open — check CI** | `feat/127-ask-replay` |
+| S1 `ask` scripted mock + record/replay | #127 | **CI green, PR #138 ready to merge** | `feat/127-ask-replay` |
 | S2 record types + annotations | #128 | todo | |
 | S3 tagged unions + real `Result`/`Option` + strict mode | #129 | todo | |
 | S4 `askAs T` — structured output, validate, retry | #124 | todo | |
@@ -30,7 +30,7 @@ Done on the branch: `CHURING_ASK_MOCK_FILE` (scripted answers), `CHURING_ASK_CAC
 `CHURING_ASK_MODE` (record/replay), string escapes in the lexer, JSON `\r` and `\uXXXX`,
 `.ch.env` test sidecars, and parse errors now exit 1. That last fix can expose old tests that
 were silently broken (`32_json` never parsed before string escapes existed): fix whatever CI
-reports before merging.
+reports before merging. (Done: 22_church_match and 28_io_monad had multi-line applications in parentheses that never parsed; the parser now supports them.)
 
 ### Gaps found in the 2026-11-21 analysis (why the steps are in this order)
 - **Type system can't express the AI features.** `TDict` is homogeneous (no records), `Result`
